@@ -189,12 +189,21 @@ fun ListenTogetherScreen(
     }
 
     val isInRoom = listenTogetherManager.isInRoom
-    val isHost = roomState?.hostId == userId
+    val activeDeviceId by listenTogetherManager.activeDeviceId.collectAsStateWithLifecycle()
+    val isHost = listenTogetherManager.isHost || (roomState?.hostId != null && roomState?.hostId == userId)
 
     // User action menu dialog
     if (selectedUserForMenu != null && selectedUsername != null) {
         UserActionDialog(
             username = selectedUsername ?: "",
+            isHost = isHost,
+            onSetActiveDevice = {
+                selectedUserForMenu?.let {
+                    listenTogetherManager.setActiveDevice(it)
+                }
+                selectedUserForMenu = null
+                selectedUsername = null
+            },
             onKick = {
                 selectedUserForMenu?.let {
                     listenTogetherManager.kickUser(it, "Removed by host")
@@ -290,7 +299,12 @@ fun ListenTogetherScreen(
                 enabled = metroConnectEnabled,
                 isInRoom = isInRoom,
                 remoteUsers = remoteUsers,
-                onSelectActiveDevice = { isRemote ->
+                activeDeviceId = activeDeviceId,
+                currentUserId = userId ?: "",
+                onSelectActiveDevice = { targetId ->
+                    listenTogetherManager.setActiveDevice(targetId)
+                },
+                onToggleRemote = { isRemote ->
                     metroConnectEnabled = isRemote
                     listenTogetherManager.setMetroConnectEnabled(isRemote)
                 },
@@ -315,9 +329,11 @@ fun ListenTogetherScreen(
                     ConnectedUsersSection(
                         users = connectedUsers,
                         isHost = isHost,
+                        hostId = room.hostId,
+                        activeDeviceId = activeDeviceId,
                         currentUserId = currentUserIdValue,
                         onUserClick = { clickedUserId, username ->
-                            if (isHost && clickedUserId != currentUserIdValue) {
+                            if (clickedUserId != currentUserIdValue) {
                                 selectedUserForMenu = clickedUserId
                                 selectedUsername = username
                             }
@@ -769,6 +785,8 @@ private fun RoomStatusCard(
 private fun ConnectedUsersSection(
     users: List<UserInfo>,
     isHost: Boolean,
+    hostId: String?,
+    activeDeviceId: String?,
     currentUserId: String,
     onUserClick: (String, String) -> Unit,
 ) {
@@ -799,10 +817,16 @@ private fun ConnectedUsersSection(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 users.forEach { user ->
+                    val userIsHost = user.isHost || (hostId != null && user.userId == hostId)
+                    val isActiveSpeaker =
+                        (activeDeviceId != null && user.userId == activeDeviceId) ||
+                            (activeDeviceId == null && userIsHost)
                     UserAvatar(
                         user = user,
+                        isHost = userIsHost,
+                        isActiveSpeaker = isActiveSpeaker,
                         isCurrentUser = user.userId == currentUserId,
-                        isClickable = isHost && user.userId != currentUserId,
+                        isClickable = true,
                         onClick = { onUserClick(user.userId, user.username) },
                     )
                 }
@@ -814,6 +838,8 @@ private fun ConnectedUsersSection(
 @Composable
 private fun UserAvatar(
     user: UserInfo,
+    isHost: Boolean,
+    isActiveSpeaker: Boolean,
     isCurrentUser: Boolean,
     isClickable: Boolean,
     onClick: () -> Unit,
@@ -822,7 +848,7 @@ private fun UserAvatar(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier =
             Modifier
-                .width(72.dp)
+                .width(80.dp)
                 .clickable(enabled = isClickable, onClick = onClick),
     ) {
         Box(
@@ -833,8 +859,9 @@ private fun UserAvatar(
                 shape = CircleShape,
                 color =
                     when {
-                        user.isHost -> MaterialTheme.colorScheme.primary
-                        isCurrentUser -> MaterialTheme.colorScheme.secondary
+                        isHost -> MaterialTheme.colorScheme.primary
+                        isActiveSpeaker -> MaterialTheme.colorScheme.secondary
+                        isCurrentUser -> MaterialTheme.colorScheme.tertiary
                         else -> MaterialTheme.colorScheme.surfaceVariant
                     },
             ) {
@@ -848,23 +875,29 @@ private fun UserAvatar(
                         fontWeight = FontWeight.Bold,
                         color =
                             when {
-                                user.isHost -> MaterialTheme.colorScheme.onPrimary
-                                isCurrentUser -> MaterialTheme.colorScheme.onSecondary
+                                isHost -> MaterialTheme.colorScheme.onPrimary
+                                isActiveSpeaker -> MaterialTheme.colorScheme.onSecondary
+                                isCurrentUser -> MaterialTheme.colorScheme.onTertiary
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             },
                     )
                 }
             }
 
-            if (user.isHost || isCurrentUser) {
+            if (isHost || isCurrentUser || isActiveSpeaker) {
                 Surface(
                     modifier =
                         Modifier
                             .align(Alignment.BottomEnd)
                             .offset(x = 4.dp, y = 4.dp)
-                            .size(20.dp),
+                            .size(22.dp),
                     shape = CircleShape,
-                    color = if (user.isHost) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                    color =
+                        when {
+                            isHost -> MaterialTheme.colorScheme.primary
+                            isActiveSpeaker -> MaterialTheme.colorScheme.secondary
+                            else -> MaterialTheme.colorScheme.tertiary
+                        },
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
@@ -873,30 +906,64 @@ private fun UserAvatar(
                         Icon(
                             painter =
                                 painterResource(
-                                    if (user.isHost) R.drawable.crown else R.drawable.person,
+                                    when {
+                                        isHost -> R.drawable.crown
+                                        isActiveSpeaker -> R.drawable.volume_up
+                                        else -> R.drawable.person
+                                    },
                                 ),
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(12.dp),
+                            tint =
+                                when {
+                                    isHost -> MaterialTheme.colorScheme.onPrimary
+                                    isActiveSpeaker -> MaterialTheme.colorScheme.onSecondary
+                                    else -> MaterialTheme.colorScheme.onTertiary
+                                },
+                            modifier = Modifier.size(13.dp),
                         )
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         Text(
             text = user.username,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = if (isCurrentUser) FontWeight.Bold else FontWeight.Medium,
-            color = if (user.isHost) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            color = if (isHost) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
 
-        if (user.isHost) {
+        // Subtitle badge: Speaker vs Remote Controller
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color =
+                if (isActiveSpeaker) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                },
+            modifier = Modifier.padding(top = 2.dp),
+        ) {
+            Text(
+                text = if (isActiveSpeaker) "🔊 Altavoz" else "📱 Control",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color =
+                    if (isActiveSpeaker) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
+
+        if (isHost) {
             Text(
                 text = stringResource(R.string.host_label),
                 style = MaterialTheme.typography.labelSmall,
@@ -1300,7 +1367,10 @@ private fun MetroConnectCard(
     enabled: Boolean,
     isInRoom: Boolean,
     remoteUsers: List<UserInfo>,
-    onSelectActiveDevice: (Boolean) -> Unit,
+    activeDeviceId: String?,
+    currentUserId: String,
+    onSelectActiveDevice: (String) -> Unit,
+    onToggleRemote: (Boolean) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1343,7 +1413,8 @@ private fun MetroConnectCard(
                     Text(
                         text =
                             if (enabled) {
-                                val targetName = remoteUsers.firstOrNull()?.username ?: "PC Limusic"
+                                val targetName = remoteUsers.firstOrNull { it.userId == activeDeviceId }?.username
+                                    ?: remoteUsers.firstOrNull()?.username ?: "PC Limusic"
                                 stringResource(R.string.metro_connect_remote_active, targetName)
                             } else {
                                 stringResource(R.string.metro_connect_this_device)
@@ -1356,7 +1427,22 @@ private fun MetroConnectCard(
                 Spacer(Modifier.width(8.dp))
                 Switch(
                     checked = enabled,
-                    onCheckedChange = { onSelectActiveDevice(it) },
+                    onCheckedChange = { isChecked ->
+                        if (isChecked) {
+                            val target = remoteUsers.firstOrNull()?.userId
+                            if (!target.isNullOrEmpty()) {
+                                onSelectActiveDevice(target)
+                            } else {
+                                onToggleRemote(true)
+                            }
+                        } else {
+                            if (currentUserId.isNotEmpty()) {
+                                onSelectActiveDevice(currentUserId)
+                            } else {
+                                onToggleRemote(false)
+                            }
+                        }
+                    },
                     thumbContent = {
                         Icon(
                             painter =
@@ -1396,11 +1482,19 @@ private fun MetroConnectCard(
                 Spacer(Modifier.height(8.dp))
 
                 // Option 1: Este dispositivo (Audio local)
+                val isThisDeviceActive = (activeDeviceId != null && activeDeviceId == currentUserId) ||
+                    (activeDeviceId == null && !enabled)
                 Row(
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .clickable { onSelectActiveDevice(false) }
+                            .clickable {
+                                if (currentUserId.isNotEmpty()) {
+                                    onSelectActiveDevice(currentUserId)
+                                } else {
+                                    onToggleRemote(false)
+                                }
+                            }
                             .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -1408,7 +1502,7 @@ private fun MetroConnectCard(
                         painter = painterResource(R.drawable.volume_up),
                         contentDescription = null,
                         tint =
-                            if (!enabled) {
+                            if (isThisDeviceActive) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -1420,7 +1514,7 @@ private fun MetroConnectCard(
                         Text(
                             text = stringResource(R.string.metro_connect_this_device),
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (!enabled) FontWeight.Bold else FontWeight.Normal,
+                            fontWeight = if (isThisDeviceActive) FontWeight.Bold else FontWeight.Normal,
                             color =
                                 if (enabled) {
                                     MaterialTheme.colorScheme.onPrimaryContainer
@@ -1440,19 +1534,27 @@ private fun MetroConnectCard(
                         )
                     }
                     RadioButton(
-                        selected = !enabled,
-                        onClick = { onSelectActiveDevice(false) },
+                        selected = isThisDeviceActive,
+                        onClick = {
+                            if (currentUserId.isNotEmpty()) {
+                                onSelectActiveDevice(currentUserId)
+                            } else {
+                                onToggleRemote(false)
+                            }
+                        },
                     )
                 }
 
                 // Option 2: Remote device(s)
                 if (remoteUsers.isNotEmpty()) {
                     remoteUsers.forEach { user ->
+                        val isUserActive = (activeDeviceId != null && activeDeviceId == user.userId) ||
+                            (activeDeviceId == null && enabled && remoteUsers.firstOrNull()?.userId == user.userId)
                         Row(
                             modifier =
                                 Modifier
                                     .fillMaxWidth()
-                                    .clickable { onSelectActiveDevice(true) }
+                                    .clickable { onSelectActiveDevice(user.userId) }
                                     .padding(vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -1460,7 +1562,7 @@ private fun MetroConnectCard(
                                 painter = painterResource(R.drawable.cast_connected),
                                 contentDescription = null,
                                 tint =
-                                    if (enabled) {
+                                    if (isUserActive) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -1472,7 +1574,7 @@ private fun MetroConnectCard(
                                 Text(
                                     text = user.username + if (user.isHost) " (Host)" else "",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (enabled) FontWeight.Bold else FontWeight.Normal,
+                                    fontWeight = if (isUserActive) FontWeight.Bold else FontWeight.Normal,
                                     color =
                                         if (enabled) {
                                             MaterialTheme.colorScheme.onPrimaryContainer
@@ -1492,8 +1594,8 @@ private fun MetroConnectCard(
                                 )
                             }
                             RadioButton(
-                                selected = enabled,
-                                onClick = { onSelectActiveDevice(true) },
+                                selected = isUserActive,
+                                onClick = { onSelectActiveDevice(user.userId) },
                             )
                         }
                     }
@@ -1502,7 +1604,7 @@ private fun MetroConnectCard(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelectActiveDevice(true) }
+                                .clickable { onToggleRemote(true) }
                                 .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1543,7 +1645,7 @@ private fun MetroConnectCard(
                         }
                         RadioButton(
                             selected = enabled,
-                            onClick = { onSelectActiveDevice(true) },
+                            onClick = { onToggleRemote(true) },
                         )
                     }
                 }
@@ -1612,6 +1714,8 @@ private fun SettingsLinkCard(onClick: () -> Unit) {
 @Composable
 private fun UserActionDialog(
     username: String,
+    isHost: Boolean,
+    onSetActiveDevice: () -> Unit,
     onKick: () -> Unit,
     onPermanentKick: () -> Unit,
     onTransferOwnership: () -> Unit,
@@ -1648,83 +1752,12 @@ private fun UserActionDialog(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Kick button
+            // Set as Active Audio Output button
             Surface(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onKick),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.errorContainer,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(16.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.close),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(24.dp),
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.kick_user),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        Text(
-                            text = stringResource(R.string.kick_user_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            // Permanently kick button
-            Surface(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onPermanentKick),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(16.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.close),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(24.dp),
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.permanently_kick_user),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            text = stringResource(R.string.permanently_kick_user_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            // Transfer ownership button
-            Surface(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onTransferOwnership),
+                        .clickable(onClick = onSetActiveDevice),
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.primaryContainer,
             ) {
@@ -1733,7 +1766,7 @@ private fun UserActionDialog(
                     modifier = Modifier.padding(16.dp),
                 ) {
                     Icon(
-                        painter = painterResource(R.drawable.crown),
+                        painter = painterResource(R.drawable.volume_up),
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp),
@@ -1741,16 +1774,125 @@ private fun UserActionDialog(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = stringResource(R.string.transfer_ownership),
+                            text = "Reproducir en este dispositivo",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            text = stringResource(R.string.transfer_ownership_desc),
+                            text = "El audio de la sala sonará en este equipo",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+            }
+
+            if (isHost) {
+                // Kick button
+                Surface(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onKick),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(16.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.close),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.kick_user),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                text = stringResource(R.string.kick_user_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                // Permanently kick button
+                Surface(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onPermanentKick),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(16.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.close),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.permanently_kick_user),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = stringResource(R.string.permanently_kick_user_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                // Transfer ownership button
+                Surface(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onTransferOwnership),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(16.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.crown),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.transfer_ownership),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = stringResource(R.string.transfer_ownership_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }

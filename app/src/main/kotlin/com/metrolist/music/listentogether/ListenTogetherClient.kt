@@ -211,6 +211,10 @@ sealed class ListenTogetherEvent {
         val state: SyncStatePayload,
     ) : ListenTogetherEvent()
 
+    data class ActiveDeviceChanged(
+        val activeDeviceId: String,
+    ) : ListenTogetherEvent()
+
     // Error events
     data class ServerError(
         val code: String,
@@ -274,6 +278,9 @@ class ListenTogetherClient
 
         private val _userId = MutableStateFlow<String?>(null)
         val userId: StateFlow<String?> = _userId.asStateFlow()
+
+        private val _activeDeviceId = MutableStateFlow<String?>(null)
+        val activeDeviceId: StateFlow<String?> = _activeDeviceId.asStateFlow()
 
         private val _pendingJoinRequests = MutableStateFlow<List<JoinRequestPayload>>(emptyList())
         val pendingJoinRequests: StateFlow<List<JoinRequestPayload>> = _pendingJoinRequests.asStateFlow()
@@ -1110,6 +1117,7 @@ class ListenTogetherClient
                         val payload = codec.decodePayload(msgType, payloadBytes) as? RoomCreatedPayload ?: return
                         _userId.value = payload.userId
                         _role.value = RoomRole.HOST
+                        _activeDeviceId.value = payload.userId
                         lastPlaybackRevision.set(0L)
                         sessionToken = payload.sessionToken
                         storedRoomCode = payload.roomCode
@@ -1188,7 +1196,12 @@ class ListenTogetherClient
                         wasHost = false
                         sessionStartTime = System.currentTimeMillis()
 
-                        _roomState.value = payload.state
+                        val hostId = payload.state.hostId
+                        val mappedUsers = payload.state.usersList.map { u ->
+                            if (u.userId == hostId) u.copy(isHost = true) else u
+                        }
+                        _roomState.value = payload.state.copy(users = mappedUsers)
+                        _activeDeviceId.value = hostId
                         lastPlaybackRevision.set(payload.state.revision)
 
                         // Save session to persistent storage
@@ -1208,10 +1221,15 @@ class ListenTogetherClient
 
                     MessageTypes.USER_JOINED -> {
                         val payload = codec.decodePayload(msgType, payloadBytes) as? UserJoinedPayload ?: return
-                        _roomState.value =
-                            _roomState.value?.copy(
-                                users = _roomState.value!!.users + UserInfo(payload.userId, payload.username, false),
-                            )
+                        val currentUsers = _roomState.value?.usersList ?: emptyList()
+                        val isHost = payload.userId == _roomState.value?.hostId
+                        val exists = currentUsers.any { it.userId == payload.userId }
+                        val updatedUsers = if (exists) {
+                            currentUsers.map { if (it.userId == payload.userId) it.copy(username = payload.username, isHost = isHost, isConnected = true) else it }
+                        } else {
+                            currentUsers + UserInfo(payload.userId, payload.username, isHost)
+                        }
+                        _roomState.value = _roomState.value?.copy(users = updatedUsers)
                         _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != payload.userId }
 
                         // Dismiss notification if it exists
@@ -1227,8 +1245,11 @@ class ListenTogetherClient
                         val payload = codec.decodePayload(msgType, payloadBytes) as? UserLeftPayload ?: return
                         _roomState.value =
                             _roomState.value?.copy(
-                                users = _roomState.value!!.users.filter { it.userId != payload.userId },
+                                users = _roomState.value!!.usersList.filter { it.userId != payload.userId },
                             )
+                        if (_activeDeviceId.value == payload.userId) {
+                            _activeDeviceId.value = _roomState.value?.hostId
+                        }
                         log(LogLevel.INFO, "User left", payload.username)
                         emitEvent(ListenTogetherEvent.UserLeft(payload.userId, payload.username))
                     }
@@ -1362,6 +1383,14 @@ class ListenTogetherClient
                                     _roomState.value = _roomState.value?.copy(volume = vol.coerceIn(0f, 1f))
                                 }
                             }
+
+                            PlaybackActions.SET_ACTIVE_DEVICE -> {
+                                val targetId = payload.trackIdOrNull
+                                if (!targetId.isNullOrEmpty()) {
+                                    _activeDeviceId.value = targetId
+                                    emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetId))
+                                }
+                            }
                         }
 
                         _roomState.value =
@@ -1410,6 +1439,43 @@ class ListenTogetherClient
                         val payload = codec.decodePayload(msgType, payloadBytes) as? SuggestionReceivedPayload ?: return
                         // Only host should receive suggestions
                         if (_role.value == RoomRole.HOST) {
+                            val sId = payload.trackInfo.id
+                            if (sId.startsWith("metro_connect:")) {
+                                approveSuggestion(payload.suggestionId)
+                                when {
+                                    sId.startsWith("metro_connect:set_active:") -> {
+                                        val targetId = sId.removePrefix("metro_connect:set_active:")
+                                        sendPlaybackAction(PlaybackActions.SET_ACTIVE_DEVICE, trackId = targetId)
+                                        _activeDeviceId.value = targetId
+                                        emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetId))
+                                    }
+                                    sId == "metro_connect:transfer_host" -> {
+                                        transferHost(payload.fromUserId)
+                                    }
+                                    sId.startsWith("metro_connect:action:") -> {
+                                        val parts = sId.removePrefix("metro_connect:action:").split(":")
+                                        val subAction = parts.getOrNull(0) ?: ""
+                                        val subTrackId = parts.getOrNull(1)?.takeIf(String::isNotEmpty)
+                                        val subPos = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+                                        when (subAction) {
+                                            PlaybackActions.PLAY -> sendPlaybackAction(PlaybackActions.PLAY, trackId = subTrackId, position = subPos)
+                                            PlaybackActions.PAUSE -> sendPlaybackAction(PlaybackActions.PAUSE, trackId = subTrackId, position = subPos)
+                                            PlaybackActions.SEEK -> sendPlaybackAction(PlaybackActions.SEEK, trackId = subTrackId, position = subPos)
+                                            PlaybackActions.CHANGE_TRACK -> {
+                                                if (!subTrackId.isNullOrEmpty()) {
+                                                    sendPlaybackAction(
+                                                        PlaybackActions.CHANGE_TRACK,
+                                                        trackId = subTrackId,
+                                                        trackInfo = payload.trackInfo.copy(id = subTrackId),
+                                                        position = 0L,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                return
+                            }
                             // Check if user is blocked
                             if (isUserBlocked(payload.fromUsername)) {
                                 log(LogLevel.INFO, "Suggestion from blocked user ignored", "User: ${payload.fromUsername}")
@@ -1757,7 +1823,7 @@ class ListenTogetherClient
         }
 
         /**
-         * Send a playback action (host only)
+         * Send a playback action (host broadcasts directly, guest relays to host)
          */
         fun sendPlaybackAction(
             action: String,
@@ -1770,7 +1836,20 @@ class ListenTogetherClient
             volume: Float? = null,
         ) {
             if (_role.value != RoomRole.HOST) {
-                log(LogLevel.ERROR, "Cannot control playback", "Not host")
+                if (isInRoom) {
+                    val safeTrackId = trackId ?: trackInfo?.id ?: ""
+                    val safePos = position ?: 0L
+                    suggestTrack(
+                        TrackInfo(
+                            id = "metro_connect:action:$action:$safeTrackId:$safePos",
+                            title = action,
+                            artist = "Metro-Connect",
+                            duration = safePos,
+                        ),
+                    )
+                } else {
+                    log(LogLevel.ERROR, "Cannot control playback", "Not host and not in room")
+                }
                 return
             }
             sendMessage(
@@ -1791,6 +1870,26 @@ class ListenTogetherClient
                         },
                 ),
             )
+        }
+
+        /**
+         * Set the active playback device across the room
+         */
+        fun setActiveDevice(targetUserId: String) {
+            if (_role.value == RoomRole.HOST) {
+                sendPlaybackAction(PlaybackActions.SET_ACTIVE_DEVICE, trackId = targetUserId)
+                _activeDeviceId.value = targetUserId
+                emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetUserId))
+            } else if (isInRoom) {
+                suggestTrack(
+                    TrackInfo(
+                        id = "metro_connect:set_active:$targetUserId",
+                        title = "Set Active Device",
+                        artist = "Metro-Connect",
+                        duration = 0L,
+                    ),
+                )
+            }
         }
 
         /**

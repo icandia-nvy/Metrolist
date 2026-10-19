@@ -53,6 +53,7 @@ object PlaybackActions {
     const val QUEUE_CLEAR = "queue_clear"
     const val SYNC_QUEUE = "sync_queue"
     const val SET_VOLUME = "set_volume"
+    const val SET_ACTIVE_DEVICE = "set_active_device"
 }
 
 typealias TrackInfo = Listentogether.TrackInfo

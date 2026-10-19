@@ -152,6 +152,7 @@ class ListenTogetherManager
         val roomState = client.roomState
         val role = client.role
         val userId = client.userId
+        val activeDeviceId = client.activeDeviceId
         val pendingJoinRequests = client.pendingJoinRequests
         val bufferingUsers = client.bufferingUsers
         val logs = client.logs
@@ -170,7 +171,8 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
+                        if (isSyncing || !isInRoom) return
+                        if (!isHost && !metroConnectEnabled.value) return
 
                         val connection = playerConnection ?: return
                         if (connection.allowInternalSync) return
@@ -191,7 +193,7 @@ class ListenTogetherManager
                                 lastSyncedIsPlaying = false
                             }
                             if (playWhenReady) {
-                                Timber.tag(TAG).d("[SYNC] Host is playing, sending PLAY after track change")
+                                Timber.tag(TAG).d("[SYNC] Sending PLAY after track change")
                                 lastSyncedIsPlaying = true
                                 client.sendPlaybackAction(
                                     PlaybackActions.PLAY,
@@ -218,11 +220,11 @@ class ListenTogetherManager
                         val currentTrackId = player.currentMediaItem?.mediaId
 
                         if (playWhenReady) {
-                            Timber.tag(TAG).d("Host sending PLAY at position $position (track: $currentTrackId)")
+                            Timber.tag(TAG).d("Sending PLAY at position $position (track: $currentTrackId)")
                             client.sendPlaybackAction(PlaybackActions.PLAY, trackId = currentTrackId, position = position)
                             lastSyncedIsPlaying = true
                         } else if (!playWhenReady && (lastSyncedIsPlaying == true)) {
-                            Timber.tag(TAG).d("Host sending PAUSE at position $position (track: $currentTrackId)")
+                            Timber.tag(TAG).d("Sending PAUSE at position $position (track: $currentTrackId)")
                             client.sendPlaybackAction(PlaybackActions.PAUSE, trackId = currentTrackId, position = position)
                             lastSyncedIsPlaying = false
                         }
@@ -236,7 +238,7 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
+                        if (isSyncing || !isInRoom) return
                         if (mediaItem == null) return
 
                         val connection = playerConnection ?: return
@@ -252,11 +254,11 @@ class ListenTogetherManager
                             // Reset play state tracking since server resets IsPlaying on track change
                             lastSyncedIsPlaying = false
 
-                            Timber.tag(TAG).d("Host sending track change: ${metadata.title}")
+                            Timber.tag(TAG).d("Sending track change: ${metadata.title}")
                             sendTrackChangeInternal(metadata)
 
                             val isPlaying = player.playWhenReady
-                            if (isPlaying) {
+                            if (isPlaying && isHost) {
                                 Timber.tag(TAG).d("Host is playing during track change, sending PLAY")
                                 lastSyncedIsPlaying = true
                                 client.sendPlaybackAction(
@@ -279,13 +281,14 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
+                        if (isSyncing || !isInRoom) return
+                        if (!isHost && !metroConnectEnabled.value) return
                         if (playerConnection?.allowInternalSync == true) return
 
                         // Only send seek if it was a user-initiated seek
                         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                             val trackId = playerConnection?.player?.currentMediaItem?.mediaId
-                            Timber.tag(TAG).d("Host sending SEEK to ${newPosition.positionMs} (track: $trackId)")
+                            Timber.tag(TAG).d("Sending SEEK to ${newPosition.positionMs} (track: $trackId)")
                             client.sendPlaybackAction(PlaybackActions.SEEK, trackId = trackId, position = newPosition.positionMs)
                         }
                     } catch (e: Exception) {
@@ -324,8 +327,8 @@ class ListenTogetherManager
 
                 // Set up playback blocking for guests
                 connection?.shouldBlockPlaybackChanges = {
-                    // Block if we're in a room as a guest (not host)
-                    isInRoom && !isHost
+                    // Block if we're in a room as a guest (not host) unless in Metro-Connect remote mode
+                    isInRoom && !isHost && !metroConnectEnabled.value
                 }
 
                 // Add listener if in room
@@ -540,14 +543,25 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.PlaybackSync -> {
                     Timber.tag(TAG).d("PlaybackSync received: ${event.action.action}")
-                    // Guests handle all sync actions. Host should also apply queue ops.
+                    // Guests handle all sync actions. Host should also apply queue ops and active device.
                     val actionType = event.action.action
                     val isQueueOp =
                         actionType == PlaybackActions.QUEUE_ADD ||
                             actionType == PlaybackActions.QUEUE_REMOVE ||
                             actionType == PlaybackActions.QUEUE_CLEAR
-                    if (!isHost || isQueueOp) {
+                    val isSetActiveDevice = actionType == PlaybackActions.SET_ACTIVE_DEVICE
+                    if (!isHost || isQueueOp || isSetActiveDevice) {
                         handlePlaybackSync(event.action)
+                    }
+                }
+
+                is ListenTogetherEvent.ActiveDeviceChanged -> {
+                    Timber.tag(TAG).d("ActiveDeviceChanged: ${event.activeDeviceId}")
+                    val amIActive = event.activeDeviceId == client.userId.value
+                    metroConnectEnabled.value = !amIActive
+                    applyMetroConnectState()
+                    if (amIActive && !isHost) {
+                        client.requestSync()
                     }
                 }
 
@@ -890,6 +904,10 @@ class ListenTogetherManager
             }
         }
 
+        fun setActiveDevice(userId: String) {
+            client.setActiveDevice(userId)
+        }
+
         private fun updateGuestMuteState() {
             if (metroConnectEnabled.value && isInRoom) {
                 applyMetroConnectState()
@@ -1179,6 +1197,18 @@ class ListenTogetherManager
         }
 
         private fun handlePlaybackSync(action: PlaybackActionPayload) {
+            if (action.action == PlaybackActions.SET_ACTIVE_DEVICE) {
+                val targetId = action.trackIdOrNull
+                if (!targetId.isNullOrEmpty()) {
+                    val amIActive = targetId == client.userId.value
+                    metroConnectEnabled.value = !amIActive
+                    applyMetroConnectState()
+                    if (amIActive && !isHost) {
+                        client.requestSync()
+                    }
+                }
+                return
+            }
             if (metroConnectEnabled.value) {
                 applyMetroConnectState()
                 return
@@ -2014,7 +2044,7 @@ class ListenTogetherManager
          * Internal track change - bypasses isSyncing check for initial state sync
          */
         private fun sendTrackChangeInternal(metadata: MediaMetadata) {
-            if (!isHost) return
+            if (!isHost && !metroConnectEnabled.value) return
 
             // Use a default duration of 3 minutes if duration is 0 or negative
             val durationMs = if (metadata.duration > 0) metadata.duration.toLong() * 1000 else 180000L
