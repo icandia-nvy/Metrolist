@@ -31,6 +31,7 @@ import com.metrolist.music.extensions.getQueueWindows
 import com.metrolist.music.extensions.metadata
 import com.metrolist.music.extensions.togglePlayPause
 import com.metrolist.music.extensions.withUpdatedMetadata
+import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.MusicService.MusicBinder
 import com.metrolist.music.playback.queues.Queue
@@ -252,6 +253,7 @@ class PlayerConnection(
                     val initialStatus = queue.getInitialStatus()
                     val items = initialStatus.items
                     if (items.isNotEmpty()) {
+                        val first = items.first()
                         val metadata = first.metadata ?: MediaMetadata(
                             id = first.mediaId,
                             title = first.mediaMetadata.title?.toString() ?: "",
