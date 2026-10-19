@@ -285,6 +285,16 @@ val PlaybackActionPayload.insertNextOrNull: Boolean? get() = insertNext.takeIf {
 val SuggestionRejectedPayload.reasonOrNull: String? get() = reason.takeIf(String::isNotEmpty)
 val BufferWaitPayload.waitingFor: List<String> get() = waitingForList
 
+fun TrackInfo.copy(
+    id: String = this.id,
+    title: String = this.title,
+    artist: String = this.artist,
+    album: String? = this.album,
+    duration: Long = this.duration,
+    thumbnail: String? = this.thumbnail,
+    suggestedBy: String? = this.suggestedBy,
+): TrackInfo = TrackInfo(id, title, artist, album, duration, thumbnail, suggestedBy)
+
 fun UserInfo.copy(
     userId: String = this.userId,
     username: String = this.username,
