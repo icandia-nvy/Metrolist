@@ -619,6 +619,8 @@
     <string name="metro_connect_active_badge">Active Output</string>
     <string name="metro_connect_remote_badge">Silent Remote</string>
     <string name="metro_connect_no_devices">Waiting for your PC or tablet to connect...</string>
+    <string name="metro_connect_auto_reconnect">Maintain device connection</string>
+    <string name="metro_connect_auto_reconnect_desc">Automatically reconnect to your paired device when the app starts</string>
     <string name="listen_together_in_top_bar">Listen Together in top bar</string>
     <string name="listen_together_in_top_bar_desc">Show Listen Together in the top app bar instead of the navigation bar</string>
     <string name="listen_together_description">Listen to music with your friends in real time. Create a room to host, or join an existing room with a code</string>

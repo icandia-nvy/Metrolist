@@ -201,6 +201,7 @@ val ListenTogetherRoomCodeKey = stringPreferencesKey("listenTogetherRoomCode")
 val ListenTogetherUserIdKey = stringPreferencesKey("listenTogetherUserId")
 val ListenTogetherIsHostKey = booleanPreferencesKey("listenTogetherIsHost")
 val ListenTogetherSessionTimestampKey = longPreferencesKey("listenTogetherSessionTimestamp")
+val ListenTogetherAutoReconnectKey = booleanPreferencesKey("listenTogetherAutoReconnect")
 
 val LastFMSessionKey = stringPreferencesKey("lastfmSession")
 val LastFMUsernameKey = stringPreferencesKey("lastfmUsername")

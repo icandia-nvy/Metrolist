@@ -543,16 +543,7 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.PlaybackSync -> {
                     Timber.tag(TAG).d("PlaybackSync received: ${event.action.action}")
-                    // Guests handle all sync actions. Host should also apply queue ops and active device.
-                    val actionType = event.action.action
-                    val isQueueOp =
-                        actionType == PlaybackActions.QUEUE_ADD ||
-                            actionType == PlaybackActions.QUEUE_REMOVE ||
-                            actionType == PlaybackActions.QUEUE_CLEAR
-                    val isSetActiveDevice = actionType == PlaybackActions.SET_ACTIVE_DEVICE
-                    if (!isHost || isQueueOp || isSetActiveDevice) {
-                        handlePlaybackSync(event.action)
-                    }
+                    handlePlaybackSync(event.action)
                 }
 
                 is ListenTogetherEvent.ActiveDeviceChanged -> {
@@ -860,6 +851,34 @@ class ListenTogetherManager
                 }
                 castHandler?.onSetVolumeAction = { vol ->
                     client.sendPlaybackAction(PlaybackActions.SET_VOLUME, volume = vol)
+                }
+                castHandler?.onLoadMediaAction = { metadata ->
+                    client.sendPlaybackAction(
+                        PlaybackActions.CHANGE_TRACK,
+                        trackId = metadata.id,
+                        trackInfo = metadata.toTrackInfo(),
+                        position = 0L,
+                    )
+                }
+                castHandler?.onAddToQueueAction = { item, insertNext ->
+                    val metadata = item.metadata
+                    if (metadata != null) {
+                        client.sendPlaybackAction(
+                            PlaybackActions.QUEUE_ADD,
+                            trackId = metadata.id,
+                            trackInfo = metadata.toTrackInfo(),
+                            insertNext = insertNext,
+                        )
+                    }
+                }
+                castHandler?.onRemoveFromQueueAction = { mediaId ->
+                    client.sendPlaybackAction(
+                        PlaybackActions.QUEUE_REMOVE,
+                        trackId = mediaId,
+                    )
+                }
+                castHandler?.onClearQueueAction = {
+                    client.sendPlaybackAction(PlaybackActions.QUEUE_CLEAR)
                 }
 
                 // Update mediaMetadata so MiniPlayer & Player screens show the track info
@@ -2162,6 +2181,19 @@ class ListenTogetherManager
                 duration = durationMs,
                 thumbnail = metadata.thumbnailUrl,
                 suggestedBy = metadata.suggestedBy,
+            )
+        }
+
+        private fun MediaMetadata.toTrackInfo(): TrackInfo {
+            val durationMs = if (duration > 0) duration.toLong() * 1000 else 180000L
+            return TrackInfo(
+                id = id,
+                title = title,
+                artist = artists.joinToArtistString(getArtistSeparator(context)) { it.name },
+                album = album?.title,
+                duration = durationMs,
+                thumbnail = thumbnailUrl,
+                suggestedBy = suggestedBy,
             )
         }
 

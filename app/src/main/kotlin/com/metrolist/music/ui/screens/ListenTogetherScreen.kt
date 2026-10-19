@@ -92,6 +92,7 @@ import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.AppBarHeight
+import com.metrolist.music.constants.ListenTogetherAutoReconnectKey
 import com.metrolist.music.constants.ListenTogetherInTopBarKey
 import com.metrolist.music.constants.ListenTogetherMetroConnectKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
@@ -1649,16 +1650,45 @@ private fun MetroConnectCard(
                         )
                     }
                 }
-            } else {
-                Text(
-                    text = stringResource(R.string.metro_connect_desc),
-                    style = MaterialTheme.typography.bodySmall,
-                    color =
-                        if (enabled) {
-                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+            }
+
+            Spacer(Modifier.height(10.dp))
+            var autoReconnect by rememberPreference(ListenTogetherAutoReconnectKey, defaultValue = true)
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { autoReconnect = !autoReconnect }
+                        .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.metro_connect_auto_reconnect),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color =
+                            if (enabled) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                    )
+                    Text(
+                        text = stringResource(R.string.metro_connect_auto_reconnect_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color =
+                            if (enabled) {
+                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Switch(
+                    checked = autoReconnect,
+                    onCheckedChange = { autoReconnect = it },
                 )
             }
         }

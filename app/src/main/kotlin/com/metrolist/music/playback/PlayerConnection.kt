@@ -245,6 +245,28 @@ class PlayerConnection(
             Timber.tag("PlayerConnection").d("playQueue blocked - Listen Together guest")
             return
         }
+        val castHandler = service.castConnectionHandler
+        if (castHandler?.isCasting?.value == true) {
+            scope.launch {
+                try {
+                    val initialStatus = queue.initialStatus()
+                    val title = initialStatus.title
+                    val items = initialStatus.items
+                    if (items.isNotEmpty()) {
+                        val first = items.first()
+                        castHandler.loadMedia(first.metadata ?: first.toMediaMetadata())
+                        if (items.size > 1) {
+                            items.drop(1).forEach {
+                                castHandler.addToQueue(it, insertNext = false)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Error playing queue to cast/remote")
+                }
+            }
+            return
+        }
         if (!playerReadinessFlow.value) {
             Timber.tag(TAG).w("playQueue called before player ready; delegating to service")
         }
@@ -293,6 +315,11 @@ class PlayerConnection(
             Timber.tag("PlayerConnection").d("playNext blocked - Listen Together guest")
             return
         }
+        val castHandler = service.castConnectionHandler
+        if (castHandler?.isCasting?.value == true) {
+            items.forEach { castHandler.addToQueue(it, insertNext = true) }
+            return
+        }
         try {
             service.playNext(items)
         } catch (e: Exception) {
@@ -307,6 +334,11 @@ class PlayerConnection(
         // Block if Listen Together guest (unless internal sync)
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {
             Timber.tag("PlayerConnection").d("addToQueue blocked - Listen Together guest")
+            return
+        }
+        val castHandler = service.castConnectionHandler
+        if (castHandler?.isCasting?.value == true) {
+            items.forEach { castHandler.addToQueue(it, insertNext = false) }
             return
         }
         try {

@@ -444,9 +444,11 @@ class ListenTogetherClient
                 val isHost = context.dataStore.get(ListenTogetherIsHostKey, false)
                 val timestamp = context.dataStore.get(ListenTogetherSessionTimestampKey, 0L)
 
-                // Check if session is still valid (within grace period)
+                val autoReconnect = context.dataStore.get(ListenTogetherAutoReconnectKey, true)
+
+                // Check if session is still valid (within grace period or auto-reconnect enabled)
                 if (token.isNotEmpty() && roomCode.isNotEmpty() &&
-                    (System.currentTimeMillis() - timestamp < SESSION_GRACE_PERIOD_MS)
+                    (autoReconnect || (System.currentTimeMillis() - timestamp < SESSION_GRACE_PERIOD_MS))
                 ) {
                     if (generationAtLoadStart != sessionApplyGeneration.get()) {
                         log(
@@ -461,7 +463,12 @@ class ListenTogetherClient
                     _userId.value = userId.ifEmpty { null }
                     wasHost = isHost
                     sessionStartTime = timestamp
-                    log(LogLevel.INFO, "Loaded persisted session", "Room: $roomCode, Host: $isHost")
+                    log(LogLevel.INFO, "Loaded persisted session", "Room: $roomCode, Host: $isHost, AutoReconnect: $autoReconnect")
+
+                    if (autoReconnect && _connectionState.value == ConnectionState.DISCONNECTED) {
+                        log(LogLevel.INFO, "Auto-reconnecting to paired room", roomCode)
+                        connect()
+                    }
                 } else if (token.isNotEmpty()) {
                     if (generationAtLoadStart != sessionApplyGeneration.get()) {
                         return
@@ -1461,6 +1468,21 @@ class ListenTogetherClient
                                             PlaybackActions.PLAY -> sendPlaybackAction(PlaybackActions.PLAY, trackId = subTrackId, position = subPos)
                                             PlaybackActions.PAUSE -> sendPlaybackAction(PlaybackActions.PAUSE, trackId = subTrackId, position = subPos)
                                             PlaybackActions.SEEK -> sendPlaybackAction(PlaybackActions.SEEK, trackId = subTrackId, position = subPos)
+                                            PlaybackActions.SKIP_NEXT -> sendPlaybackAction(PlaybackActions.SKIP_NEXT)
+                                            PlaybackActions.SKIP_PREV -> sendPlaybackAction(PlaybackActions.SKIP_PREV)
+                                            PlaybackActions.QUEUE_ADD -> {
+                                                val cleanId = subTrackId ?: payload.trackInfo.id
+                                                val ti = payload.trackInfo.copy(id = cleanId)
+                                                sendPlaybackAction(PlaybackActions.QUEUE_ADD, trackId = cleanId, trackInfo = ti)
+                                            }
+                                            PlaybackActions.QUEUE_REMOVE -> {
+                                                if (!subTrackId.isNullOrEmpty()) {
+                                                    sendPlaybackAction(PlaybackActions.QUEUE_REMOVE, trackId = subTrackId)
+                                                }
+                                            }
+                                            PlaybackActions.QUEUE_CLEAR -> {
+                                                sendPlaybackAction(PlaybackActions.QUEUE_CLEAR)
+                                            }
                                             PlaybackActions.CHANGE_TRACK -> {
                                                 if (!subTrackId.isNullOrEmpty()) {
                                                     sendPlaybackAction(
@@ -1842,9 +1864,11 @@ class ListenTogetherClient
                     suggestTrack(
                         TrackInfo(
                             id = "metro_connect:action:$action:$safeTrackId:$safePos",
-                            title = action,
-                            artist = "Metro-Connect",
-                            duration = safePos,
+                            title = trackInfo?.title ?: action,
+                            artist = trackInfo?.artist ?: "Metro-Connect",
+                            duration = trackInfo?.duration ?: safePos,
+                            album = trackInfo?.album,
+                            thumbnailUrl = trackInfo?.thumbnailUrl,
                         ),
                     )
                 } else {

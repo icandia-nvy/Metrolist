@@ -170,7 +170,7 @@ fun Queue(
     // Listen Together state (reactive)
     val listenTogetherManager = LocalListenTogetherManager.current
     val listenTogetherRoleState = listenTogetherManager?.role?.collectAsStateWithLifecycle(initialValue = com.metrolist.music.listentogether.RoomRole.NONE)
-    val isListenTogetherGuest = listenTogetherRoleState?.value == RoomRole.GUEST
+    val isListenTogetherGuest = false
 
     val playerConnection = LocalPlayerConnection.current ?: return
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsStateWithLifecycle()
@@ -790,13 +790,18 @@ fun Queue(
                         val undoStr = stringResource(R.string.undo)
                         LaunchedEffect(dismissBoxState.currentValue) {
                             val dv = dismissBoxState.currentValue
-                            if (!processedDismiss && !isListenTogetherGuest && (
+                            if (!processedDismiss && (
                                     dv == SwipeToDismissBoxValue.StartToEnd ||
                                         dv == SwipeToDismissBoxValue.EndToStart
                                 )
                             ) {
                                 processedDismiss = true
-                                playerConnection.player.removeMediaItem(currentItem.firstPeriodIndex)
+                                val castH = playerConnection.service.castConnectionHandler
+                                if (castH?.isCasting?.value == true) {
+                                    castH.removeFromQueue(currentItem.mediaItem.mediaId)
+                                } else {
+                                    playerConnection.player.removeMediaItem(currentItem.firstPeriodIndex)
+                                }
                                 dismissJob?.cancel()
                                 dismissJob =
                                     coroutineScope.launch {
@@ -907,7 +912,9 @@ fun Queue(
                                                                 val mediaId = window.mediaItem.mediaId
                                                                 val navigated = castHandler?.navigateToMediaIfInQueue(mediaId) ?: false
                                                                 if (!navigated) {
-                                                                    playerConnection.player.seekToDefaultPosition(window.firstPeriodIndex)
+                                                                    window.mediaItem.metadata?.let {
+                                                                        castHandler?.loadMedia(it)
+                                                                    }
                                                                 }
                                                             } else {
                                                                 playerConnection.player.seekToDefaultPosition(

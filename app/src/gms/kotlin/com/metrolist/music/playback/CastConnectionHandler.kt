@@ -156,6 +156,10 @@ class CastConnectionHandler(
 
     fun loadMedia(metadata: AppMediaMetadata) {
         if (!_isCasting.value) return
+        if (castPlayer == null) {
+            onLoadMediaAction?.invoke(metadata)
+            return
+        }
         loadJob?.cancel()
         loadJob =
             scope.launch {
@@ -192,6 +196,28 @@ class CastConnectionHandler(
     var onSkipNextAction: (() -> Unit)? = null
     var onSkipPreviousAction: (() -> Unit)? = null
     var onSetVolumeAction: ((Float) -> Unit)? = null
+    var onLoadMediaAction: ((AppMediaMetadata) -> Unit)? = null
+    var onAddToQueueAction: ((MediaItem, Boolean) -> Unit)? = null
+    var onRemoveFromQueueAction: ((String) -> Unit)? = null
+    var onClearQueueAction: (() -> Unit)? = null
+
+    fun addToQueue(item: MediaItem, insertNext: Boolean = false) {
+        if (castPlayer == null) {
+            onAddToQueueAction?.invoke(item, insertNext)
+        }
+    }
+
+    fun removeFromQueue(mediaId: String) {
+        if (castPlayer == null) {
+            onRemoveFromQueueAction?.invoke(mediaId)
+        }
+    }
+
+    fun clearQueue() {
+        if (castPlayer == null) {
+            onClearQueueAction?.invoke()
+        }
+    }
 
     fun setRemoteMode(
         active: Boolean,

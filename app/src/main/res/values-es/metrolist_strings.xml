@@ -414,6 +414,8 @@
     <string name="metro_connect_active_badge">Salida Activa</string>
     <string name="metro_connect_remote_badge">Control Silencioso</string>
     <string name="metro_connect_no_devices">Esperando que se conecte tu PC o tablet...</string>
+    <string name="metro_connect_auto_reconnect">Mantener dispositivos vinculados</string>
+    <string name="metro_connect_auto_reconnect_desc">Reconectar automáticamente con tu dispositivo vinculado al abrir la app</string>
     <string name="copy_code">Copiar código</string>
     <string name="kick_user_desc">Eliminar a esta persona de la sesión</string>
     <string name="permanently_kick_user">Bloquear permanentemente</string>

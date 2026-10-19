@@ -1,6 +1,7 @@
 package com.metrolist.music.playback
 
 import android.content.Context
+import androidx.media3.common.MediaItem
 import com.metrolist.music.models.MediaMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +43,10 @@ class CastConnectionHandler(
     var onSkipNextAction: (() -> Unit)? = null
     var onSkipPreviousAction: (() -> Unit)? = null
     var onSetVolumeAction: ((Float) -> Unit)? = null
+    var onLoadMediaAction: ((MediaMetadata) -> Unit)? = null
+    var onAddToQueueAction: ((MediaItem, Boolean) -> Unit)? = null
+    var onRemoveFromQueueAction: ((String) -> Unit)? = null
+    var onClearQueueAction: (() -> Unit)? = null
 
     fun setRemoteMode(
         active: Boolean,
@@ -80,7 +85,21 @@ class CastConnectionHandler(
 
     fun loadCurrentMedia() = Unit
 
-    fun loadMedia(metadata: MediaMetadata) = Unit
+    fun loadMedia(metadata: MediaMetadata) {
+        onLoadMediaAction?.invoke(metadata)
+    }
+
+    fun addToQueue(item: MediaItem, insertNext: Boolean = false) {
+        onAddToQueueAction?.invoke(item, insertNext)
+    }
+
+    fun removeFromQueue(mediaId: String) {
+        onRemoveFromQueueAction?.invoke(mediaId)
+    }
+
+    fun clearQueue() {
+        onClearQueueAction?.invoke()
+    }
 
     fun play() {
         _castIsPlaying.value = true
