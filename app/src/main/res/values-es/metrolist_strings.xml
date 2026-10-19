@@ -404,6 +404,8 @@
     <string name="listen_together_auto_approval_joins_desc">Aprobar automáticamente solicitudes de conexión sin revisarlas manualmente</string>
     <string name="listen_together_sync_volume">Sincronizar volumen del anfitrión</string>
     <string name="listen_together_sync_volume_desc">Los invitados igualarán el nivel de volumen del anfitrión</string>
+    <string name="metro_connect_title">Metro-Connect (Modo Control Remoto)</string>
+    <string name="metro_connect_desc">Silencia este teléfono y sincroniza la reproducción con Limusic en tu PC como Spotify Connect</string>
     <string name="copy_code">Copiar código</string>
     <string name="kick_user_desc">Eliminar a esta persona de la sesión</string>
     <string name="permanently_kick_user">Bloquear permanentemente</string>

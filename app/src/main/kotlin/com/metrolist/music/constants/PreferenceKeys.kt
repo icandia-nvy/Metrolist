@@ -193,6 +193,7 @@ val ListenTogetherAutoApproveSuggestionsKey = booleanPreferencesKey("listenToget
 val ListenTogetherSyncVolumeKey = booleanPreferencesKey("listenTogetherSyncVolume")
 val ListenTogetherBlockedUsersKey = stringPreferencesKey("listenTogetherBlockedUsers")
 val ListenTogetherInTopBarKey = booleanPreferencesKey("listenTogetherInTopBar")
+val ListenTogetherMetroConnectKey = booleanPreferencesKey("listenTogetherMetroConnect")
 
 // Session persistence for reconnection
 val ListenTogetherSessionTokenKey = stringPreferencesKey("listenTogetherSessionToken")

@@ -12,6 +12,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.WatchEndpoint
+import com.metrolist.music.constants.ListenTogetherMetroConnectKey
 import com.metrolist.music.constants.ListenTogetherSyncVolumeKey
 import com.metrolist.music.extensions.currentMetadata
 import com.metrolist.music.extensions.metadata
@@ -23,6 +24,7 @@ import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.PlayerConnection
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.utils.dataStore
+import com.metrolist.music.utils.safeDataStoreEdit
 import com.metrolist.music.utils.getArtistSeparator
 import com.metrolist.music.utils.joinToArtistString
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -100,6 +102,7 @@ class ListenTogetherManager
         private var playerListenerRegistered = false
 
         private val syncHostVolumeEnabled = MutableStateFlow(true)
+        val metroConnectEnabled = MutableStateFlow(false)
         private var lastSyncedVolume: Float? = null
         private var previousMuteState: Boolean? = null
         private var muteForcedByPreference = false
@@ -377,6 +380,15 @@ class ListenTogetherManager
                         syncHostVolumeEnabled.value = enabled
                     }
             }
+            scope.launch {
+                context.dataStore.data
+                    .map { it[ListenTogetherMetroConnectKey] ?: false }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        metroConnectEnabled.value = enabled
+                        applyMetroConnectMuteState()
+                    }
+            }
         }
 
         /**
@@ -481,6 +493,7 @@ class ListenTogetherManager
                         startQueueSyncObservation()
                         startHeartbeat()
                         startVolumeSyncObservation()
+                        applyMetroConnectMuteState()
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error handling RoomCreated event")
                     }
@@ -702,7 +715,7 @@ class ListenTogetherManager
         }
 
         private fun cleanup() {
-            if (lastRole == RoomRole.GUEST) {
+            if (lastRole == RoomRole.GUEST || muteForcedByPreference) {
                 restoreGuestMuteState()
             }
             if (playerListenerRegistered) {
@@ -727,11 +740,35 @@ class ListenTogetherManager
             ++currentTrackGeneration // Increment to invalidate any pending track-change coroutines
         }
 
-        private fun updateGuestMuteState() {
-            // Guests are no longer forced to mute - they can hear the music too
+        fun applyMetroConnectMuteState() {
             val connection = playerConnection ?: return
-            // Just restore any previously forced mute state (should typically be none)
-            restoreGuestMuteState()
+            if (metroConnectEnabled.value && isInRoom) {
+                if (!connection.isMuted.value) {
+                    saveMuteStateOnJoin()
+                    Timber.tag(TAG).d("Metro-Connect active in room: muting local player")
+                    connection.setMuted(true)
+                    muteForcedByPreference = true
+                }
+            } else if (muteForcedByPreference) {
+                Timber.tag(TAG).d("Metro-Connect inactive or room left: restoring mute state")
+                restoreGuestMuteState()
+            }
+        }
+
+        fun setMetroConnectEnabled(enabled: Boolean) {
+            scope.launch {
+                context.safeDataStoreEdit { preferences ->
+                    preferences[ListenTogetherMetroConnectKey] = enabled
+                }
+            }
+        }
+
+        private fun updateGuestMuteState() {
+            if (metroConnectEnabled.value && isInRoom) {
+                applyMetroConnectMuteState()
+            } else {
+                restoreGuestMuteState()
+            }
         }
 
         /**

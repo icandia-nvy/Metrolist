@@ -59,6 +59,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -90,6 +92,7 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.AppBarHeight
 import com.metrolist.music.constants.ListenTogetherInTopBarKey
+import com.metrolist.music.constants.ListenTogetherMetroConnectKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.JoinRequestPayload
@@ -128,6 +131,8 @@ fun ListenTogetherScreen(
 
     val (listenTogetherInTopBar) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
     val shouldShowTopBar = showTopBar || listenTogetherInTopBar
+
+    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, defaultValue = false)
 
     var savedUsername by rememberPreference(ListenTogetherUsernameKey, "")
     var roomCodeInput by rememberSaveable { mutableStateOf("") }
@@ -275,6 +280,17 @@ fun ListenTogetherScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+
+        // Metro-Connect (Modo Control Remoto) Card
+        item {
+            MetroConnectCard(
+                enabled = metroConnectEnabled,
+                onCheckedChange = {
+                    metroConnectEnabled = it
+                    listenTogetherManager.setMetroConnectEnabled(it)
+                },
+            )
         }
 
         if (isInRoom) {
@@ -1271,6 +1287,81 @@ private fun JoinCreateRoomSection(
                     Text(stringResource(R.string.join_room), fontWeight = FontWeight.SemiBold)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MetroConnectCard(
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Card(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable { onCheckedChange(!enabled) },
+        shape = RoundedCornerShape(16.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    if (enabled) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+            ),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painter = painterResource(if (enabled) R.drawable.cast_connected else R.drawable.cast),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.metro_connect_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color =
+                        if (enabled) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.metro_connect_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color =
+                        if (enabled) {
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = enabled,
+                onCheckedChange = onCheckedChange,
+                thumbContent = {
+                    Icon(
+                        painter =
+                            painterResource(
+                                id = if (enabled) R.drawable.check else R.drawable.close,
+                            ),
+                        contentDescription = null,
+                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                    )
+                },
+            )
         }
     }
 }

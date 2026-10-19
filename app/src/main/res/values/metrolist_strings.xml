@@ -609,6 +609,8 @@
     <string name="listen_together_auto_approval_suggestions_desc">Automatically approve and queue song suggestions from guests</string>
     <string name="listen_together_sync_volume">Sync host volume</string>
     <string name="listen_together_sync_volume_desc">Guests will match the host\'s volume level</string>
+    <string name="metro_connect_title">Metro-Connect (Remote Control Mode)</string>
+    <string name="metro_connect_desc">Mutes local phone audio and synchronizes playback with Limusic on PC like Spotify Connect</string>
     <string name="listen_together_in_top_bar">Listen Together in top bar</string>
     <string name="listen_together_in_top_bar_desc">Show Listen Together in the top app bar instead of the navigation bar</string>
     <string name="listen_together_description">Listen to music with your friends in real time. Create a room to host, or join an existing room with a code</string>

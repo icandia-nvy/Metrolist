@@ -78,6 +78,7 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListenTogetherAutoApprovalKey
 import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
+import com.metrolist.music.constants.ListenTogetherMetroConnectKey
 import com.metrolist.music.constants.ListenTogetherServerUrlKey
 import com.metrolist.music.constants.ListenTogetherSyncVolumeKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
@@ -118,6 +119,7 @@ fun ListenTogetherSettings(navController: NavController) {
     var autoApprovalJoins by rememberPreference(ListenTogetherAutoApprovalKey, false)
     var autoApproveSuggestions by rememberPreference(ListenTogetherAutoApproveSuggestionsKey, false)
     var syncHostVolume by rememberPreference(ListenTogetherSyncVolumeKey, true)
+    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, false)
 
     var showServerUrlDialog by rememberSaveable { mutableStateOf(false) }
     var showUsernameDialog by rememberSaveable { mutableStateOf(false) }
@@ -497,6 +499,30 @@ fun ListenTogetherSettings(navController: NavController) {
                                 )
                             },
                             onClick = { syncHostVolume = !syncHostVolume },
+                        ),
+                        IntegrationCardItem(
+                            icon = painterResource(if (metroConnectEnabled) R.drawable.cast_connected else R.drawable.cast),
+                            title = { Text(stringResource(R.string.metro_connect_title)) },
+                            description = {
+                                Text(stringResource(R.string.metro_connect_desc))
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = metroConnectEnabled,
+                                    onCheckedChange = { metroConnectEnabled = it },
+                                    thumbContent = {
+                                        Icon(
+                                            painter =
+                                                painterResource(
+                                                    id = if (metroConnectEnabled) R.drawable.check else R.drawable.close,
+                                                ),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    },
+                                )
+                            },
+                            onClick = { metroConnectEnabled = !metroConnectEnabled },
                         ),
                         IntegrationCardItem(
                             icon = painterResource(R.drawable.bug_report),
