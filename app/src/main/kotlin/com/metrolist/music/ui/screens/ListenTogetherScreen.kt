@@ -58,6 +58,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -282,13 +283,16 @@ fun ListenTogetherScreen(
             }
         }
 
-        // Metro-Connect (Modo Control Remoto) Card
+        // Metro-Connect (Modo Control Remoto / Dispositivo Activo) Card
+        val remoteUsers = roomState?.usersList?.filter { it.isConnected && it.userId != userId } ?: emptyList()
         item {
             MetroConnectCard(
                 enabled = metroConnectEnabled,
-                onCheckedChange = {
-                    metroConnectEnabled = it
-                    listenTogetherManager.setMetroConnectEnabled(it)
+                isInRoom = isInRoom,
+                remoteUsers = remoteUsers,
+                onSelectActiveDevice = { isRemote ->
+                    metroConnectEnabled = isRemote
+                    listenTogetherManager.setMetroConnectEnabled(isRemote)
                 },
             )
         }
@@ -1294,14 +1298,13 @@ private fun JoinCreateRoomSection(
 @Composable
 private fun MetroConnectCard(
     enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    isInRoom: Boolean,
+    remoteUsers: List<UserInfo>,
+    onSelectActiveDevice: (Boolean) -> Unit,
 ) {
     Card(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable { onCheckedChange(!enabled) },
-        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors =
             CardDefaults.cardColors(
                 containerColor =
@@ -1312,30 +1315,239 @@ private fun MetroConnectCard(
                     },
             ),
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                painter = painterResource(if (enabled) R.drawable.cast_connected else R.drawable.cast),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp),
-            )
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painter = painterResource(if (enabled) R.drawable.cast_connected else R.drawable.cast),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp),
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.metro_connect_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color =
+                            if (enabled) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                    )
+                    Text(
+                        text =
+                            if (enabled) {
+                                val targetName = remoteUsers.firstOrNull()?.username ?: "PC Limusic"
+                                stringResource(R.string.metro_connect_remote_active, targetName)
+                            } else {
+                                stringResource(R.string.metro_connect_this_device)
+                            },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { onSelectActiveDevice(it) },
+                    thumbContent = {
+                        Icon(
+                            painter =
+                                painterResource(
+                                    id = if (enabled) R.drawable.check else R.drawable.close,
+                                ),
+                            contentDescription = null,
+                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                        )
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            if (isInRoom) {
                 Text(
-                    text = stringResource(R.string.metro_connect_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    text = stringResource(R.string.metro_connect_desc),
+                    style = MaterialTheme.typography.bodySmall,
                     color =
                         if (enabled) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                         } else {
-                            MaterialTheme.colorScheme.onSurface
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         },
                 )
-                Spacer(Modifier.height(2.dp))
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(
+                    color =
+                        if (enabled) {
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f)
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        },
+                )
+                Spacer(Modifier.height(8.dp))
+
+                // Option 1: Este dispositivo (Audio local)
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectActiveDevice(false) }
+                            .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.volume_up),
+                        contentDescription = null,
+                        tint =
+                            if (!enabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.metro_connect_this_device),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (!enabled) FontWeight.Bold else FontWeight.Normal,
+                            color =
+                                if (enabled) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                        )
+                        Text(
+                            text = stringResource(R.string.metro_connect_this_device_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color =
+                                if (enabled) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                        )
+                    }
+                    RadioButton(
+                        selected = !enabled,
+                        onClick = { onSelectActiveDevice(false) },
+                    )
+                }
+
+                // Option 2: Remote device(s)
+                if (remoteUsers.isNotEmpty()) {
+                    remoteUsers.forEach { user ->
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectActiveDevice(true) }
+                                    .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.cast_connected),
+                                contentDescription = null,
+                                tint =
+                                    if (enabled) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = user.username + if (user.isHost) " (Host)" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (enabled) FontWeight.Bold else FontWeight.Normal,
+                                    color =
+                                        if (enabled) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                )
+                                Text(
+                                    text = stringResource(R.string.metro_connect_remote_device_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color =
+                                        if (enabled) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                )
+                            }
+                            RadioButton(
+                                selected = enabled,
+                                onClick = { onSelectActiveDevice(true) },
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectActiveDevice(true) }
+                                .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.cast),
+                            contentDescription = null,
+                            tint =
+                                if (enabled) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.metro_connect_remote_device),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (enabled) FontWeight.Bold else FontWeight.Normal,
+                                color =
+                                    if (enabled) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                            )
+                            Text(
+                                text = stringResource(R.string.metro_connect_no_devices),
+                                style = MaterialTheme.typography.bodySmall,
+                                color =
+                                    if (enabled) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                            )
+                        }
+                        RadioButton(
+                            selected = enabled,
+                            onClick = { onSelectActiveDevice(true) },
+                        )
+                    }
+                }
+            } else {
                 Text(
                     text = stringResource(R.string.metro_connect_desc),
                     style = MaterialTheme.typography.bodySmall,
@@ -1347,21 +1559,6 @@ private fun MetroConnectCard(
                         },
                 )
             }
-            Spacer(Modifier.width(12.dp))
-            Switch(
-                checked = enabled,
-                onCheckedChange = onCheckedChange,
-                thumbContent = {
-                    Icon(
-                        painter =
-                            painterResource(
-                                id = if (enabled) R.drawable.check else R.drawable.close,
-                            ),
-                        contentDescription = null,
-                        modifier = Modifier.size(SwitchDefaults.IconSize),
-                    )
-                },
-            )
         }
     }
 }

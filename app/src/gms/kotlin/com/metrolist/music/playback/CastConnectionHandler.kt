@@ -186,22 +186,83 @@ class CastConnectionHandler(
             }
     }
 
+    var onPlayAction: (() -> Unit)? = null
+    var onPauseAction: (() -> Unit)? = null
+    var onSeekAction: ((Long) -> Unit)? = null
+    var onSkipNextAction: (() -> Unit)? = null
+    var onSkipPreviousAction: (() -> Unit)? = null
+    var onSetVolumeAction: ((Float) -> Unit)? = null
+
+    fun setRemoteMode(
+        active: Boolean,
+        deviceName: String? = null,
+        isPlaying: Boolean = false,
+        position: Long = 0L,
+        duration: Long = 0L,
+    ) {
+        if (castPlayer == null) {
+            _isCasting.value = active
+            _castDeviceName.value = deviceName
+            _castIsPlaying.value = isPlaying
+            _castPosition.value = position
+            _castDuration.value = duration
+        }
+    }
+
+    fun updatePosition(pos: Long) {
+        if (castPlayer == null) {
+            _castPosition.value = pos
+        }
+    }
+
+    fun updateIsPlaying(playing: Boolean) {
+        if (castPlayer == null) {
+            _castIsPlaying.value = playing
+        }
+    }
+
+    fun updateDuration(duration: Long) {
+        if (castPlayer == null) {
+            _castDuration.value = duration
+        }
+    }
+
     fun play() {
-        castPlayer?.play()
+        if (castPlayer != null) {
+            castPlayer?.play()
+        } else {
+            _castIsPlaying.value = true
+            onPlayAction?.invoke()
+        }
     }
 
     fun pause() {
-        castPlayer?.pause()
+        if (castPlayer != null) {
+            castPlayer?.pause()
+        } else {
+            _castIsPlaying.value = false
+            onPauseAction?.invoke()
+        }
     }
 
     fun seekTo(position: Long) {
-        castPlayer?.seekTo(position)
+        if (castPlayer != null) {
+            castPlayer?.seekTo(position)
+        } else {
+            _castPosition.value = position
+            onSeekAction?.invoke(position)
+        }
     }
 
     fun setVolume(volume: Float) {
-        val player = castPlayer ?: return
-        val maxVolume = player.deviceInfo.maxVolume.takeIf { it > 0 } ?: return
-        player.setDeviceVolume((volume.coerceIn(0f, 1f) * maxVolume).roundToInt(), 0)
+        val player = castPlayer
+        if (player != null) {
+            val maxVolume = player.deviceInfo.maxVolume.takeIf { it > 0 } ?: return
+            player.setDeviceVolume((volume.coerceIn(0f, 1f) * maxVolume).roundToInt(), 0)
+        } else {
+            _castVolume.value = volume
+            onSetVolumeAction?.invoke(volume)
+        }
     }
 
     fun navigateToMediaIfInQueue(mediaId: String): Boolean {
@@ -217,22 +278,30 @@ class CastConnectionHandler(
     }
 
     fun skipToNext() {
-        val player = castPlayer ?: return
-        if (player.hasNextMediaItem()) {
-            player.seekToNextMediaItem()
-        } else if (musicService.player.hasNextMediaItem()) {
-            musicService.player.pause()
-            musicService.player.seekToNextMediaItem()
+        val player = castPlayer
+        if (player != null) {
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+            } else if (musicService.player.hasNextMediaItem()) {
+                musicService.player.pause()
+                musicService.player.seekToNextMediaItem()
+            }
+        } else {
+            onSkipNextAction?.invoke()
         }
     }
 
     fun skipToPrevious() {
-        val player = castPlayer ?: return
-        if (player.hasPreviousMediaItem()) {
-            player.seekToPreviousMediaItem()
-        } else if (musicService.player.hasPreviousMediaItem()) {
-            musicService.player.pause()
-            musicService.player.seekToPreviousMediaItem()
+        val player = castPlayer
+        if (player != null) {
+            if (player.hasPreviousMediaItem()) {
+                player.seekToPreviousMediaItem()
+            } else if (musicService.player.hasPreviousMediaItem()) {
+                musicService.player.pause()
+                musicService.player.seekToPreviousMediaItem()
+            }
+        } else {
+            onSkipPreviousAction?.invoke()
         }
     }
 

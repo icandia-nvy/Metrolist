@@ -126,6 +126,7 @@ class ListenTogetherManager
         // Track active sync job to cancel it if a better update arrives
         private var activeSyncJob: Job? = null
         private var driftCorrectionJob: Job? = null
+        private var remotePositionTickerJob: Job? = null
         private var driftBasePlaybackParameters: PlaybackParameters? = null
         private var driftAppliedPlaybackParameters: PlaybackParameters? = null
         private var driftCorrectedPlayer: Player? = null
@@ -168,7 +169,7 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (isSyncing || !isHost || !isInRoom) return
+                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
 
                         val connection = playerConnection ?: return
                         if (connection.allowInternalSync) return
@@ -234,7 +235,7 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (isSyncing || !isHost || !isInRoom) return
+                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
                         if (mediaItem == null) return
 
                         val connection = playerConnection ?: return
@@ -277,7 +278,7 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (isSyncing || !isHost || !isInRoom) return
+                        if (metroConnectEnabled.value || isSyncing || !isHost || !isInRoom) return
                         if (playerConnection?.allowInternalSync == true) return
 
                         // Only send seek if it was a user-initiated seek
@@ -365,7 +366,11 @@ class ListenTogetherManager
                     applyNextHostSnapshot = isHost
                     client.requestSync()
                 }
-                updateGuestMuteState()
+                if (metroConnectEnabled.value && isInRoom) {
+                    applyMetroConnectState()
+                } else {
+                    updateGuestMuteState()
+                }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Error in setPlayerConnection")
             }
@@ -386,7 +391,7 @@ class ListenTogetherManager
                     .distinctUntilChanged()
                     .collect { enabled ->
                         metroConnectEnabled.value = enabled
-                        applyMetroConnectMuteState()
+                        applyMetroConnectState()
                     }
             }
         }
@@ -446,6 +451,15 @@ class ListenTogetherManager
                     }
                 }
             }
+
+            // Sync remote mode state whenever roomState changes
+            scope.launch {
+                roomState.collect { room ->
+                    if (metroConnectEnabled.value && isInRoom) {
+                        applyMetroConnectState()
+                    }
+                }
+            }
         }
 
         private fun handleEvent(event: ListenTogetherEvent) {
@@ -493,7 +507,9 @@ class ListenTogetherManager
                         startQueueSyncObservation()
                         startHeartbeat()
                         startVolumeSyncObservation()
-                        applyMetroConnectMuteState()
+                        if (metroConnectEnabled.value) {
+                            applyMetroConnectState()
+                        }
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error handling RoomCreated event")
                     }
@@ -504,17 +520,21 @@ class ListenTogetherManager
                     // Save current mute state before joining as guest so we can restore it on leave
                     saveMuteStateOnJoin()
                     lastAppliedRevision = event.state.revision
-                    // Apply the full initial state including queue
-                    applyPlaybackState(
-                        currentTrack = event.state.currentTrackOrNull,
-                        isPlaying = event.state.isPlaying,
-                        position = event.state.position,
-                        queue = event.state.queue,
-                        effectiveAtServerTime = event.state.lastUpdate,
-                        // bypassBuffer=false (default) for initial join buffer sync
-                    )
-                    applyHostVolumeIfNeeded(event.state.volume)
-                    updateGuestMuteState()
+                    if (metroConnectEnabled.value) {
+                        applyMetroConnectState()
+                    } else {
+                        // Apply the full initial state including queue
+                        applyPlaybackState(
+                            currentTrack = event.state.currentTrackOrNull,
+                            isPlaying = event.state.isPlaying,
+                            position = event.state.position,
+                            queue = event.state.queue,
+                            effectiveAtServerTime = event.state.lastUpdate,
+                            // bypassBuffer=false (default) for initial join buffer sync
+                        )
+                        applyHostVolumeIfNeeded(event.state.volume)
+                        updateGuestMuteState()
+                    }
                 }
 
                 is ListenTogetherEvent.PlaybackSync -> {
@@ -718,6 +738,13 @@ class ListenTogetherManager
             if (lastRole == RoomRole.GUEST || muteForcedByPreference) {
                 restoreGuestMuteState()
             }
+            stopRemoteTicker()
+            try {
+                playerConnection?.service?.castConnectionHandler?.disconnect()
+                playerConnection?.service?.castConnectionHandler?.setRemoteMode(active = false)
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "Error resetting remote mode in cleanup")
+            }
             if (playerListenerRegistered) {
                 playerConnection?.player?.removeListener(playerListener)
                 playerListenerRegistered = false
@@ -740,19 +767,118 @@ class ListenTogetherManager
             ++currentTrackGeneration // Increment to invalidate any pending track-change coroutines
         }
 
-        fun applyMetroConnectMuteState() {
+        fun applyMetroConnectState() {
             val connection = playerConnection ?: return
-            if (metroConnectEnabled.value && isInRoom) {
-                if (!connection.isMuted.value) {
-                    saveMuteStateOnJoin()
-                    Timber.tag(TAG).d("Metro-Connect active in room: muting local player")
-                    connection.setMuted(true)
-                    muteForcedByPreference = true
+            val castHandler = connection.service.castConnectionHandler
+            val inRoom = isInRoom
+            val isRemote = metroConnectEnabled.value && inRoom
+
+            if (isRemote) {
+                // Pause local player completely to release Android Audio Focus
+                try {
+                    if (connection.player.playWhenReady) {
+                        connection.player.playWhenReady = false
+                    }
+                    connection.player.pause()
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Error pausing local player in remote mode")
                 }
-            } else if (muteForcedByPreference) {
-                Timber.tag(TAG).d("Metro-Connect inactive or room left: restoring mute state")
-                restoreGuestMuteState()
+
+                // Identify remote target device name
+                val currentRoom = roomState.value
+                val remoteUser = currentRoom?.usersList?.firstOrNull { it.isConnected && it.userId != client.userId.value }
+                val remoteName = remoteUser?.username ?: "PC Limusic"
+
+                // Configure castHandler for remote control
+                val track = currentRoom?.currentTrackOrNull
+                val durationMs =
+                    when {
+                        track == null -> 180000L
+                        track.duration > 10000L -> track.duration
+                        track.duration > 0L -> track.duration * 1000L
+                        else -> 180000L
+                    }
+                val currentPos = client.positionAtServerTime(
+                    currentRoom?.position ?: 0L,
+                    currentRoom?.lastUpdate ?: 0L,
+                    currentRoom?.isPlaying ?: false,
+                )
+
+                castHandler?.setRemoteMode(
+                    active = true,
+                    deviceName = remoteName,
+                    isPlaying = currentRoom?.isPlaying ?: false,
+                    position = currentPos,
+                    duration = durationMs,
+                )
+
+                // Wire actions from UI directly to WebSocket client
+                castHandler?.onPlayAction = {
+                    val current = roomState.value
+                    client.sendPlaybackAction(
+                        PlaybackActions.PLAY,
+                        trackId = current?.currentTrackOrNull?.id,
+                        position = castHandler.castPosition.value,
+                    )
+                }
+                castHandler?.onPauseAction = {
+                    val current = roomState.value
+                    client.sendPlaybackAction(
+                        PlaybackActions.PAUSE,
+                        trackId = current?.currentTrackOrNull?.id,
+                        position = castHandler.castPosition.value,
+                    )
+                }
+                castHandler?.onSeekAction = { pos ->
+                    val current = roomState.value
+                    client.sendPlaybackAction(
+                        PlaybackActions.SEEK,
+                        trackId = current?.currentTrackOrNull?.id,
+                        position = pos,
+                    )
+                }
+                castHandler?.onSkipNextAction = {
+                    client.sendPlaybackAction(PlaybackActions.SKIP_NEXT)
+                }
+                castHandler?.onSkipPreviousAction = {
+                    client.sendPlaybackAction(PlaybackActions.SKIP_PREV)
+                }
+                castHandler?.onSetVolumeAction = { vol ->
+                    client.sendPlaybackAction(PlaybackActions.SET_VOLUME, volume = vol)
+                }
+
+                // Update mediaMetadata so MiniPlayer & Player screens show the track info
+                track?.let {
+                    connection.mediaMetadata.value = it.toMediaMetadata()
+                }
+
+                // Start position ticker so seekbar moves smoothly
+                startRemoteTicker()
+            } else {
+                stopRemoteTicker()
+                castHandler?.disconnect()
+                castHandler?.setRemoteMode(active = false)
             }
+        }
+
+        private fun startRemoteTicker() {
+            if (remotePositionTickerJob?.isActive == true) return
+            remotePositionTickerJob =
+                scope.launch {
+                    while (isActive && metroConnectEnabled.value && isInRoom) {
+                        val room = roomState.value
+                        if (room?.isPlaying == true) {
+                            val pos = client.positionAtServerTime(room.position, room.lastUpdate, true)
+                            playerConnection?.service?.castConnectionHandler?.updatePosition(pos)
+                        }
+                        delay(500)
+                    }
+                }
+        }
+
+        private fun stopRemoteTicker() {
+            remotePositionTickerJob?.cancel()
+            remotePositionTickerJob = null
         }
 
         fun setMetroConnectEnabled(enabled: Boolean) {
@@ -765,7 +891,7 @@ class ListenTogetherManager
 
         private fun updateGuestMuteState() {
             if (metroConnectEnabled.value && isInRoom) {
-                applyMetroConnectMuteState()
+                applyMetroConnectState()
             } else {
                 restoreGuestMuteState()
             }
@@ -1052,6 +1178,10 @@ class ListenTogetherManager
         }
 
         private fun handlePlaybackSync(action: PlaybackActionPayload) {
+            if (metroConnectEnabled.value) {
+                applyMetroConnectState()
+                return
+            }
             if (action.revision > 0L && action.revision < lastAppliedRevision) {
                 Timber.tag(TAG).d("Ignoring stale playback revision ${action.revision} < $lastAppliedRevision")
                 return
@@ -1463,6 +1593,10 @@ class ListenTogetherManager
             state: SyncStatePayload,
             forceFullState: Boolean = false,
         ) {
+            if (metroConnectEnabled.value) {
+                applyMetroConnectState()
+                return
+            }
             if (state.revision > 0L && state.revision < lastAppliedRevision) {
                 Timber.tag(TAG).d("Ignoring stale sync revision ${state.revision} < $lastAppliedRevision")
                 return
@@ -1510,6 +1644,10 @@ class ListenTogetherManager
             effectiveAtServerTime: Long? = null,
             bypassBuffer: Boolean = false,
         ) {
+            if (metroConnectEnabled.value) {
+                applyMetroConnectState()
+                return
+            }
             invalidatePendingQueueMutations()
             val connection = playerConnection
             if (connection == null) {
