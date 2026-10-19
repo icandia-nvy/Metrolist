@@ -27,6 +27,7 @@ import com.google.protobuf.MessageLite
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListenTogetherAutoApprovalKey
 import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
+import com.metrolist.music.constants.ListenTogetherAutoReconnectKey
 import com.metrolist.music.constants.ListenTogetherIsHostKey
 import com.metrolist.music.constants.ListenTogetherRoomCodeKey
 import com.metrolist.music.constants.ListenTogetherServerUrlKey
@@ -1868,7 +1869,7 @@ class ListenTogetherClient
                             artist = trackInfo?.artist ?: "Metro-Connect",
                             duration = trackInfo?.duration ?: safePos,
                             album = trackInfo?.album,
-                            thumbnailUrl = trackInfo?.thumbnailUrl,
+                            thumbnail = trackInfo?.thumbnail,
                         ),
                     )
                 } else {

@@ -56,7 +56,7 @@ class PlayerConnection(
     context: Context,
     binder: MusicBinder,
     val database: MusicDatabase,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
 ) : Player.Listener {
     private companion object {
         private const val TAG = "PlayerConnection"
@@ -249,15 +249,14 @@ class PlayerConnection(
         if (castHandler?.isCasting?.value == true) {
             scope.launch {
                 try {
-                    val initialStatus = queue.initialStatus()
-                    val title = initialStatus.title
+                    val initialStatus = queue.getInitialStatus()
                     val items = initialStatus.items
                     if (items.isNotEmpty()) {
                         val first = items.first()
                         castHandler.loadMedia(first.metadata ?: first.toMediaMetadata())
                         if (items.size > 1) {
-                            items.drop(1).forEach {
-                                castHandler.addToQueue(it, insertNext = false)
+                            items.drop(1).forEach { item ->
+                                castHandler.addToQueue(item, insertNext = false)
                             }
                         }
                     }
