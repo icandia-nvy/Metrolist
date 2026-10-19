@@ -252,8 +252,14 @@ class PlayerConnection(
                     val initialStatus = queue.getInitialStatus()
                     val items = initialStatus.items
                     if (items.isNotEmpty()) {
-                        val first = items.first()
-                        castHandler.loadMedia(first.metadata ?: first.toMediaMetadata())
+                        val metadata = first.metadata ?: MediaMetadata(
+                            id = first.mediaId,
+                            title = first.mediaMetadata.title?.toString() ?: "",
+                            artists = listOfNotNull(first.mediaMetadata.artist?.toString()?.let { MediaMetadata.Artist(id = null, name = it) }),
+                            duration = 0,
+                            thumbnailUrl = first.mediaMetadata.artworkUri?.toString(),
+                        )
+                        castHandler.loadMedia(metadata)
                         if (items.size > 1) {
                             items.drop(1).forEach { item ->
                                 castHandler.addToQueue(item, insertNext = false)
