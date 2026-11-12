@@ -12,7 +12,7 @@ jobs:
   build:
     name: Build Metro-Connect Debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
@@ -36,11 +36,13 @@ jobs:
           keytool -genkey -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           keytool -genkeypair -v -keystore app/persistent-debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Build FOSS Debug APK
-        run: ./gradlew assembleFossDebug --no-daemon --console=plain --warning-mode summary -x lint -x lintFossDebug
+      - name: Build FOSS & GMS Debug APKs
+        run: ./gradlew assembleFossDebug assembleGmsDebug --no-daemon --console=plain --warning-mode summary -x lint -x lintFossDebug -x lintGmsDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Metrolist-MetroConnect-APK
-          path: app/build/outputs/apk/foss/debug/*.apk
+          path: |
+            app/build/outputs/apk/foss/debug/*.apk
+            app/build/outputs/apk/gms/debug/*.apk
