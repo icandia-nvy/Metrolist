@@ -13,6 +13,7 @@ import androidx.media3.common.Player
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.WatchEndpoint
 import com.metrolist.music.constants.ListenTogetherMetroConnectKey
+import com.metrolist.music.constants.ListenTogetherServerUrlKey
 import com.metrolist.music.constants.ListenTogetherSyncVolumeKey
 import com.metrolist.music.extensions.currentMetadata
 import com.metrolist.music.extensions.metadata
@@ -24,6 +25,7 @@ import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.PlayerConnection
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.utils.dataStore
+import com.metrolist.music.utils.get
 import com.metrolist.music.utils.safeDataStoreEdit
 import com.metrolist.music.utils.getArtistSeparator
 import com.metrolist.music.utils.joinToArtistString
@@ -79,6 +81,7 @@ class ListenTogetherManager
     @Inject
     constructor(
         private val client: ListenTogetherClient,
+        private val lanDiscoveryManager: LanDiscoveryManager,
         @ApplicationContext private val context: Context,
     ) {
         companion object {
@@ -474,6 +477,15 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.RoomCreated -> {
                     Timber.tag(TAG).d("Room created: ${event.roomCode}")
+                    val hostName =
+                        client.roomState.value
+                            ?.usersList
+                            ?.firstOrNull { it.userId == client.userId.value }
+                            ?.username
+                            ?: android.os.Build.MODEL
+                            ?: "Metrolist"
+                    val srvUrl = context.dataStore.get(ListenTogetherServerUrlKey, ListenTogetherServers.defaultServerUrl)
+                    lanDiscoveryManager.setHostingBeacon(hostName, event.roomCode, srvUrl)
                     try {
                         // Register player listener for host
                         val connection = playerConnection
@@ -2014,11 +2026,39 @@ class ListenTogetherManager
             client.joinRoom(roomCode, username)
         }
 
+        val lanDevices = lanDiscoveryManager.devices
+
+        fun startLanDiscovery() = lanDiscoveryManager.startDiscovery()
+
+        fun stopLanDiscovery() = lanDiscoveryManager.stopDiscovery()
+
+        fun scanLan() = lanDiscoveryManager.scanNow()
+
+        fun joinLanDevice(
+            device: LanDevice,
+            username: String,
+        ) {
+            val targetUrl =
+                if (device.wsPort > 0) {
+                    "ws://${device.ip}:${device.wsPort}/ws"
+                } else {
+                    device.serverUrl.ifBlank { ListenTogetherServers.defaultServerUrl }
+                }
+            scope.launch {
+                client.disconnect()
+                context.safeDataStoreEdit { preferences ->
+                    preferences[ListenTogetherServerUrlKey] = targetUrl
+                }
+                client.joinRoom(device.roomCode, username)
+            }
+        }
+
         /**
          * Leave the current room
          */
         fun leaveRoom() {
             Timber.tag(TAG).d("Leaving room")
+            lanDiscoveryManager.clearHostingBeacon()
             cleanup()
             client.leaveRoom()
         }

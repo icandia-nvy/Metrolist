@@ -98,6 +98,7 @@ import com.metrolist.music.constants.ListenTogetherMetroConnectKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.JoinRequestPayload
+import com.metrolist.music.listentogether.LanDevice
 import com.metrolist.music.listentogether.ListenTogetherEvent
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.listentogether.SuggestionReceivedPayload
@@ -130,6 +131,14 @@ fun ListenTogetherScreen(
     val userId by listenTogetherManager.userId.collectAsStateWithLifecycle()
     val pendingJoinRequests by listenTogetherManager.pendingJoinRequests.collectAsStateWithLifecycle()
     val pendingSuggestions by listenTogetherManager.pendingSuggestions.collectAsStateWithLifecycle()
+    val lanDevices by listenTogetherManager.lanDevices.collectAsStateWithLifecycle()
+
+    androidx.compose.runtime.DisposableEffect(listenTogetherManager) {
+        listenTogetherManager.startLanDiscovery()
+        onDispose {
+            listenTogetherManager.stopLanDiscovery()
+        }
+    }
 
     val (listenTogetherInTopBar) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
     val shouldShowTopBar = showTopBar || listenTogetherInTopBar
@@ -440,6 +449,17 @@ fun ListenTogetherScreen(
                         coroutineScope.launch {
                             bringIntoViewRequester.bringIntoView()
                         }
+                    },
+                    lanDevices = lanDevices,
+                    onScanLan = { listenTogetherManager.scanLan() },
+                    onJoinLanDevice = { device ->
+                        val username = usernameInput.takeIf { it.isNotBlank() } ?: savedUsername
+                        val finalUsername = username.trim().ifBlank { android.os.Build.MODEL ?: "Android" }
+                        savedUsername = finalUsername
+                        isJoiningRoom = true
+                        isCreatingRoom = false
+                        joinErrorMessage = null
+                        listenTogetherManager.joinLanDevice(device, finalUsername)
                     },
                 )
             }
@@ -1151,6 +1171,9 @@ private fun JoinCreateRoomSection(
     onCreateRoom: () -> Unit,
     onJoinRoom: () -> Unit,
     onFieldFocused: () -> Unit = {},
+    lanDevices: List<LanDevice> = emptyList(),
+    onScanLan: () -> Unit = {},
+    onJoinLanDevice: (LanDevice) -> Unit = {},
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1357,6 +1380,94 @@ private fun JoinCreateRoomSection(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.join_room), fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // LAN Discovery Section
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+            ) {
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Dispositivos en LAN",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        TextButton(onClick = onScanLan) {
+                            Text("Buscar", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    if (lanDevices.isEmpty()) {
+                        Text(
+                            text = "Buscando dispositivos en la red local...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        lanDevices.forEach { dev ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                onClick = { onJoinLanDevice(dev) },
+                            ) {
+                                Row(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = dev.deviceName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text =
+                                                buildString {
+                                                    append(if (dev.app == "limusic") "PC" else "Android")
+                                                    append(" · ")
+                                                    append(dev.ip)
+                                                    if (dev.wsPort > 0) append(":${dev.wsPort}") else append(" (Relay)")
+                                                    append(" · ")
+                                                    append(dev.roomCode)
+                                                },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "Unirse",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
