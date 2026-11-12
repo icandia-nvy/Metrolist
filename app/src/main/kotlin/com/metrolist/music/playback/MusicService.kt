@@ -268,6 +268,10 @@ class MusicService :
     Player.Listener,
     PlaybackStatsListener.Callback {
     @Inject
+    @com.metrolist.music.di.ApplicationScope
+    lateinit var applicationScope: CoroutineScope
+
+    @Inject
     lateinit var database: MusicDatabase
 
     @Inject
@@ -423,6 +427,7 @@ class MusicService :
 
     private var isAudioEffectSessionOpened = false
     private var openedAudioEffectSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+    private val historyReporters = HashMap<Player, YouTubeHistoryReporter>()
     private val playerNormalizationProcessors = HashMap<Player, VolumeNormalizationAudioProcessor>()
     private val playerEqualizerProcessors = HashMap<Player, CustomEqualizerAudioProcessor>()
 
@@ -486,6 +491,9 @@ class MusicService :
     private var pausedDueToNetworkError = false
     private var silenceSkipJob: Job? = null
 
+    private var historyPaused = true
+    private var historyDurationMs = 30_000L
+
     // Cached preferences to avoid runBlocking DataStore reads in hot paths
     @Volatile
     private var cachedPersistentQueue = true
@@ -523,21 +531,6 @@ class MusicService :
     // This set makes recoverSong() effectively a no-op while a call for the same
     // mediaId is already running, so at most one is ever in flight per song.
     private val recoveringSongs = Collections.synchronizedSet(mutableSetOf<String>())
-
-    private val sessionKey
-        get() = YouTube.dataSyncId.takeIf { !it.isNullOrBlank() }
-            ?: YouTube.visitorData.takeIf { !it.isNullOrBlank() }
-            ?: ""
-
-    private fun cacheKey(mediaId: String) = "${sessionKey}:$mediaId"
-
-    private val playbackUrlCache = Collections.synchronizedMap(
-        object : LinkedHashMap<String, String>(0, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean {
-                return size > 500
-            }
-        }
-    )
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
     private val bypassCacheForQualityChange = mutableSetOf<String>()
@@ -631,6 +624,8 @@ class MusicService :
         // never calls dataStore.get() (which does runBlocking internally).
         // This consolidates ~15 main-thread-blocking DataStore reads into 1.
         startupPrefs = runBlocking(Dispatchers.IO) { dataStore.data.first() }
+        historyPaused = startupPrefs!![PauseListenHistoryKey] ?: false
+        historyDurationMs = ((startupPrefs!![HistoryDuration] ?: 30f) * 1000).toLong()
 
         // 3. Connect the processor to the service
         // handled in createExoPlayer
@@ -945,6 +940,15 @@ class MusicService :
             .collectLatest(scope) { useOffload ->
                 player.setOffloadEnabled(useOffload)
                 secondaryPlayer?.setOffloadEnabled(useOffload)
+            }
+
+        dataStore.data
+            .map { (it[PauseListenHistoryKey] ?: false) to ((it[HistoryDuration] ?: 30f) * 1000).toLong() }
+            .distinctUntilChanged()
+            .collectLatest(scope) { (paused, durationMs) ->
+                historyPaused = paused
+                historyDurationMs = durationMs
+                historyReporters.values.forEach { it.refresh() }
             }
 
         var isFirstAudioTrackParamsEmit = true
@@ -1359,7 +1363,30 @@ class MusicService :
                 }
             }
         }
-        player.addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
+        val historyReporter = YouTubeHistoryReporter(
+            player = player,
+            // Media3 posts final stats after release, including after the service scope is cancelled.
+            scope = CoroutineScope(applicationScope.coroutineContext + Dispatchers.Main),
+            thresholdMs = { historyDurationMs },
+            isEnabled = { !historyPaused && !YouTube.cookie.isNullOrBlank() },
+            createReport = { videoId ->
+                val account = Triple(YouTube.cookie, YouTube.dataSyncId, YouTube.authUser)
+                val nonce = com.metrolist.innertubex.extraction.generateClientPlaybackNonce()
+                suspend {
+                    withContext(Dispatchers.IO) {
+                        YouTube.registerPlayback(videoId, nonce) {
+                            !dataStore.get(PauseListenHistoryKey, false) &&
+                                account == Triple(YouTube.cookie, YouTube.dataSyncId, YouTube.authUser)
+                        }.onFailure { reportException(it) }
+                            .getOrDefault(false)
+                    }
+                }
+            },
+            onStatsReady = this@MusicService,
+        )
+        historyReporters[player] = historyReporter
+        player.addAnalyticsListener(historyReporter.statsListener)
+        player.addAnalyticsListener(historyReporter.listener)
 
         // Cleanup handled manually in onDestroy/release
         _playerFlow.value = player
@@ -3943,10 +3970,6 @@ class MusicService :
                     expectedGeneration = cacheGeneration,
                 )
 
-                nonNullPlayback.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.let {
-                    playbackUrlCache[cacheKey(mediaId)] = it
-                }
-
                 return@Factory dataSpec.withResolvedStream(
                     CachedStreamUrl(
                         url = streamUrl,
@@ -4065,22 +4088,6 @@ class MusicService :
                     )
                 } catch (_: SQLException) {
                 }
-            }
-        }
-
-        if (playbackStats.totalPlayTimeMs >= historyDurationMs) {
-            scope.launch(Dispatchers.IO) {
-                val playbackUrl =
-                    playbackUrlCache[cacheKey(mediaItem.mediaId)]
-                if (playbackUrl == null) {
-                    Timber.tag(TAG).w("No playback tracking URL available; skipping YouTube history registration")
-                    return@launch
-                }
-                YouTube
-                    .registerPlayback(null, playbackUrl)
-                    .onFailure {
-                        reportException(it)
-                    }
             }
         }
     }
@@ -5016,6 +5023,7 @@ class MusicService :
     }
 
     private fun releaseExoPlayer(player: ExoPlayer) {
+        historyReporters.remove(player)?.close()
         playerNormalizationProcessors.remove(player)
         playerSilenceProcessors.remove(player)
         playerEqualizerProcessors.remove(player)?.let(equalizerService::removeAudioProcessor)

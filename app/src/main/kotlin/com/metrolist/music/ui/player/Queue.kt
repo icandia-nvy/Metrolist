@@ -865,6 +865,14 @@ fun Queue(
                                                                     }
                                                                 },
                                                                 onDismiss = menuState::dismiss,
+                                                                onRemoveFromQueue = {
+                                                                    val castH = playerConnection.service.castConnectionHandler
+                                                                    if (castH?.isCasting?.value == true) {
+                                                                        castH.removeFromQueue(currentItem.mediaItem.mediaId)
+                                                                    } else {
+                                                                        playerConnection.player.removeMediaItem(currentItem.firstPeriodIndex)
+                                                                    }
+                                                                }
                                                             )
                                                         }
                                                     },
