@@ -106,5 +106,6 @@ object AppModule {
     fun provideListenTogetherManager(
         @ApplicationContext context: Context,
         client: ListenTogetherClient,
-    ): ListenTogetherManager = ListenTogetherManager(client, context)
+        lanDiscoveryManager: com.metrolist.music.listentogether.LanDiscoveryManager,
+    ): ListenTogetherManager = ListenTogetherManager(client, lanDiscoveryManager, context)
 }
