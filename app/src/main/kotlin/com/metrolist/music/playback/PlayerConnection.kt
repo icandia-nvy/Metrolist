@@ -253,20 +253,23 @@ class PlayerConnection(
                     val initialStatus = queue.getInitialStatus()
                     val items = initialStatus.items
                     if (items.isNotEmpty()) {
-                        val first = items.first()
-                        val metadata = first.metadata ?: MediaMetadata(
-                            id = first.mediaId,
-                            title = first.mediaMetadata.title?.toString() ?: "",
-                            artists = listOfNotNull(first.mediaMetadata.artist?.toString()?.let { MediaMetadata.Artist(id = null, name = it) }),
-                            duration = 0,
-                            thumbnailUrl = first.mediaMetadata.artworkUri?.toString(),
-                        )
-                        castHandler.loadMedia(metadata)
-                        if (items.size > 1) {
-                            items.drop(1).forEach { item ->
-                                castHandler.addToQueue(item, insertNext = false)
+                        val resolved =
+                            items.map { item ->
+                                item.metadata ?: MediaMetadata(
+                                    id = item.mediaId,
+                                    title = item.mediaMetadata.title?.toString() ?: "",
+                                    artists =
+                                        listOfNotNull(
+                                            item.mediaMetadata.artist?.toString()?.let {
+                                                MediaMetadata.Artist(id = null, name = it)
+                                            },
+                                        ),
+                                    duration = 0,
+                                    thumbnailUrl = item.mediaMetadata.artworkUri?.toString(),
+                                )
                             }
-                        }
+                        val startIndex = initialStatus.mediaItemIndex.coerceIn(0, resolved.lastIndex)
+                        castHandler.loadQueue(resolved, startIndex)
                     }
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Error playing queue to cast/remote")
@@ -653,6 +656,7 @@ class PlayerConnection(
         mediaItem: MediaItem?,
         reason: Int,
     ) {
+        if (service.castConnectionHandler?.isCasting?.value == true) return
         mediaMetadata.value = mediaItem?.metadata
         currentMediaItemIndex.value = player.currentMediaItemIndex
         currentWindowIndex.value = player.getCurrentQueueIndex()
@@ -663,6 +667,7 @@ class PlayerConnection(
         timeline: Timeline,
         reason: Int,
     ) {
+        if (service.castConnectionHandler?.isCasting?.value == true) return
         queueWindows.value = player.getQueueWindows()
         queueTitle.value = service.queueTitle
         currentMediaItemIndex.value = player.currentMediaItemIndex
@@ -691,6 +696,11 @@ class PlayerConnection(
     }
 
     private fun updateCanSkipPreviousAndNext() {
+        if (service.castConnectionHandler?.isCasting?.value == true) {
+            canSkipPrevious.value = true
+            canSkipNext.value = true
+            return
+        }
         if (!player.currentTimeline.isEmpty) {
             val window =
                 player.currentTimeline.getWindow(player.currentMediaItemIndex, Timeline.Window())

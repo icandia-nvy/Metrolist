@@ -442,7 +442,7 @@ private fun ThumbnailHeader(
 ) {
     val listenTogetherManager = LocalListenTogetherManager.current
     val listenTogetherRoleState = listenTogetherManager?.role?.collectAsStateWithLifecycle(initialValue = RoomRole.NONE)
-    val isListenTogetherGuest = listenTogetherRoleState?.value == RoomRole.GUEST
+    val isListenTogetherGuest = listenTogetherRoleState?.value == RoomRole.GUEST && listenTogetherManager?.isControlLocked == true
     Box(
         modifier = modifier
             .fillMaxWidth()

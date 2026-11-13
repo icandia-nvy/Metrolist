@@ -652,6 +652,30 @@ class ListenTogetherClient
             return normalizeServerUrl(configuredUrl)
         }
 
+        fun isPrivateLanUrl(url: String = getServerUrl()): Boolean {
+            val host =
+                runCatching { java.net.URI(url).host?.lowercase()?.trimEnd('.') }.getOrNull()
+                    ?: return false
+            if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local") || host.endsWith(".lan")) {
+                return true
+            }
+            val ipv4 = host.split('.')
+            if (ipv4.size == 4) {
+                val o0 = ipv4[0].toIntOrNull()
+                val o1 = ipv4[1].toIntOrNull()
+                if (o0 != null && o1 != null) {
+                    if (o0 == 10) return true
+                    if (o0 == 172 && o1 in 16..31) return true
+                    if (o0 == 192 && o1 == 168) return true
+                    if (o0 == 169 && o1 == 254) return true
+                    if (o0 == 100 && o1 in 64..127) return true
+                }
+            }
+            return url.startsWith("ws://", ignoreCase = true)
+        }
+
+        fun canSendDirectPlayback(): Boolean = isInRoom && (_role.value == RoomRole.HOST || isPrivateLanUrl())
+
         /**
          * Calculate exponential backoff delay with jitter
          */
@@ -1334,30 +1358,38 @@ class ListenTogetherClient
                             }
 
                             PlaybackActions.CHANGE_TRACK -> {
+                                val resolvedQueue =
+                                    if (payload.revision > 0L || payload.queueCount > 0) {
+                                        payload.queue.orEmpty()
+                                    } else {
+                                        _roomState.value!!.queue
+                                    }
                                 _roomState.value =
                                     _roomState.value?.copy(
                                         currentTrack = payload.trackInfoOrNull,
                                         isPlaying = false,
                                         position = 0,
                                         lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
-                                        queue = if (payload.revision > 0L) payload.queue.orEmpty() else _roomState.value!!.queue,
+                                        queue = resolvedQueue,
                                         revision = maxOf(_roomState.value!!.revision, payload.revision),
                                     )
                             }
 
                             PlaybackActions.QUEUE_ADD -> {
                                 val ti = payload.trackInfoOrNull
-                                if (ti != null) {
-                                    val currentQueue = _roomState.value?.queue ?: emptyList()
+                                val currentQueue = _roomState.value?.queue ?: emptyList()
+                                if (ti != null || payload.queueCount > 0) {
                                     _roomState.value =
                                         _roomState.value?.copy(
                                             queue =
-                                                if (payload.revision > 0L) {
+                                                if (payload.queueCount > 0) {
                                                     payload.queue.orEmpty()
-                                                } else if (payload.insertNext == true) {
+                                                } else if (ti != null && payload.insertNext == true) {
                                                     listOf(ti) + currentQueue
-                                                } else {
+                                                } else if (ti != null) {
                                                     currentQueue + ti
+                                                } else {
+                                                    currentQueue
                                                 },
                                         )
                                 }
@@ -1365,11 +1397,18 @@ class ListenTogetherClient
 
                             PlaybackActions.QUEUE_REMOVE -> {
                                 val id = payload.trackIdOrNull
-                                if (!id.isNullOrEmpty()) {
+                                if (!id.isNullOrEmpty() || payload.queueCount > 0) {
                                     val currentQueue = _roomState.value?.queue ?: emptyList()
                                     _roomState.value =
                                         _roomState.value?.copy(
-                                            queue = if (payload.revision > 0L) payload.queue.orEmpty() else currentQueue.filter { it.id != id },
+                                            queue =
+                                                if (payload.queueCount > 0) {
+                                                    payload.queue.orEmpty()
+                                                } else if (!id.isNullOrEmpty()) {
+                                                    currentQueue.filter { it.id != id }
+                                                } else {
+                                                    currentQueue
+                                                },
                                         )
                                 }
                             }
@@ -1377,7 +1416,7 @@ class ListenTogetherClient
                             PlaybackActions.QUEUE_CLEAR -> {
                                 _roomState.value =
                                     _roomState.value?.copy(
-                                        queue = if (payload.revision > 0L) payload.queue.orEmpty() else emptyList(),
+                                        queue = emptyList(),
                                     )
                             }
 
@@ -1395,6 +1434,14 @@ class ListenTogetherClient
                             PlaybackActions.SET_ACTIVE_DEVICE -> {
                                 val targetId = payload.trackIdOrNull
                                 if (!targetId.isNullOrEmpty()) {
+                                    val handoffPos = payload.position.takeIf { it > 0L }
+                                    if (handoffPos != null) {
+                                        _roomState.value =
+                                            _roomState.value?.copy(
+                                                position = handoffPos,
+                                                lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
+                                            )
+                                    }
                                     _activeDeviceId.value = targetId
                                     emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetId))
                                 }
@@ -1445,11 +1492,14 @@ class ListenTogetherClient
 
                     MessageTypes.SUGGESTION_RECEIVED -> {
                         val payload = codec.decodePayload(msgType, payloadBytes) as? SuggestionReceivedPayload ?: return
-                        // Only host should receive suggestions
-                        if (_role.value == RoomRole.HOST) {
-                            val sId = payload.trackInfo.id
-                            if (sId.startsWith("metro_connect:")) {
-                                approveSuggestion(payload.suggestionId)
+                        val sId = payload.trackInfo.id
+                        val isMetroConnect = sId.startsWith("metro_connect:")
+                        val amActiveSpeaker = _userId.value != null && _activeDeviceId.value == _userId.value
+                        if (_role.value == RoomRole.HOST || (isMetroConnect && amActiveSpeaker)) {
+                            if (isMetroConnect) {
+                                if (_role.value == RoomRole.HOST) {
+                                    approveSuggestion(payload.suggestionId)
+                                }
                                 when {
                                     sId.startsWith("metro_connect:set_active:") -> {
                                         val targetId = sId.removePrefix("metro_connect:set_active:")
@@ -1458,13 +1508,16 @@ class ListenTogetherClient
                                         emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetId))
                                     }
                                     sId == "metro_connect:transfer_host" -> {
-                                        transferHost(payload.fromUserId)
+                                        if (_role.value == RoomRole.HOST) {
+                                            transferHost(payload.fromUserId)
+                                        }
                                     }
                                     sId.startsWith("metro_connect:action:") -> {
                                         val parts = sId.removePrefix("metro_connect:action:").split(":")
                                         val subAction = parts.getOrNull(0) ?: ""
                                         val subTrackId = parts.getOrNull(1)?.takeIf(String::isNotEmpty)
                                         val subPos = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+                                        val subInsertNext = parts.getOrNull(3) == "next"
                                         when (subAction) {
                                             PlaybackActions.PLAY -> sendPlaybackAction(PlaybackActions.PLAY, trackId = subTrackId, position = subPos)
                                             PlaybackActions.PAUSE -> sendPlaybackAction(PlaybackActions.PAUSE, trackId = subTrackId, position = subPos)
@@ -1474,7 +1527,12 @@ class ListenTogetherClient
                                             PlaybackActions.QUEUE_ADD -> {
                                                 val cleanId = subTrackId ?: payload.trackInfo.id
                                                 val ti = payload.trackInfo.copy(id = cleanId)
-                                                sendPlaybackAction(PlaybackActions.QUEUE_ADD, trackId = cleanId, trackInfo = ti)
+                                                sendPlaybackAction(
+                                                    PlaybackActions.QUEUE_ADD,
+                                                    trackId = cleanId,
+                                                    trackInfo = ti,
+                                                    insertNext = subInsertNext,
+                                                )
                                             }
                                             PlaybackActions.QUEUE_REMOVE -> {
                                                 if (!subTrackId.isNullOrEmpty()) {
@@ -1486,11 +1544,13 @@ class ListenTogetherClient
                                             }
                                             PlaybackActions.CHANGE_TRACK -> {
                                                 if (!subTrackId.isNullOrEmpty()) {
+                                                    val ti = payload.trackInfo.copy(id = subTrackId)
                                                     sendPlaybackAction(
                                                         PlaybackActions.CHANGE_TRACK,
                                                         trackId = subTrackId,
-                                                        trackInfo = payload.trackInfo.copy(id = subTrackId),
+                                                        trackInfo = ti,
                                                         position = 0L,
+                                                        queue = _roomState.value?.queue,
                                                     )
                                                 }
                                             }
@@ -1499,6 +1559,7 @@ class ListenTogetherClient
                                 }
                                 return
                             }
+                            if (_role.value != RoomRole.HOST) return
                             // Check if user is blocked
                             if (isUserBlocked(payload.fromUsername)) {
                                 log(LogLevel.INFO, "Suggestion from blocked user ignored", "User: ${payload.fromUsername}")
@@ -1846,7 +1907,7 @@ class ListenTogetherClient
         }
 
         /**
-         * Send a playback action (host broadcasts directly, guest relays to host)
+         * Send a playback action (host or LAN peer broadcasts directly; cloud guest relays via suggest_track)
          */
         fun sendPlaybackAction(
             action: String,
@@ -1858,13 +1919,14 @@ class ListenTogetherClient
             queueTitle: String? = null,
             volume: Float? = null,
         ) {
-            if (_role.value != RoomRole.HOST) {
+            if (!canSendDirectPlayback()) {
                 if (isInRoom) {
                     val safeTrackId = trackId ?: trackInfo?.id ?: ""
                     val safePos = position ?: 0L
+                    val nextSuffix = if (insertNext == true) ":next" else ""
                     suggestTrack(
                         TrackInfo(
-                            id = "metro_connect:action:$action:$safeTrackId:$safePos",
+                            id = "metro_connect:action:$action:$safeTrackId:$safePos$nextSuffix",
                             title = trackInfo?.title ?: action,
                             artist = trackInfo?.artist ?: "Metro-Connect",
                             duration = trackInfo?.duration ?: safePos,
@@ -1900,9 +1962,15 @@ class ListenTogetherClient
         /**
          * Set the active playback device across the room
          */
-        fun setActiveDevice(targetUserId: String) {
-            if (_role.value == RoomRole.HOST) {
-                sendPlaybackAction(PlaybackActions.SET_ACTIVE_DEVICE, trackId = targetUserId)
+        fun setActiveDevice(
+            targetUserId: String,
+            handoffPosition: Long? = null,
+        ) {
+            if (canSendDirectPlayback()) {
+                sendPlaybackAction(PlaybackActions.SET_ACTIVE_DEVICE, trackId = targetUserId, position = handoffPosition)
+                if (handoffPosition != null && handoffPosition > 0L) {
+                    _roomState.value = _roomState.value?.copy(position = handoffPosition)
+                }
                 _activeDeviceId.value = targetUserId
                 emitEvent(ListenTogetherEvent.ActiveDeviceChanged(targetUserId))
             } else if (isInRoom) {
@@ -1937,13 +2005,16 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot suggest track", "Not in room")
                 return
             }
-            if (_role.value == RoomRole.HOST) {
+            val isMetroConnect = trackInfo.id.startsWith("metro_connect:")
+            if (_role.value == RoomRole.HOST && !isMetroConnect) {
                 log(LogLevel.WARNING, "Host should not suggest tracks")
                 return
             }
             sendMessage(MessageTypes.SUGGEST_TRACK, SuggestTrackPayload(trackInfo))
-            scope.launch(Dispatchers.Main) {
-                Toast.makeText(context, context.getString(R.string.listen_together_suggestion_sent), Toast.LENGTH_SHORT).show()
+            if (!isMetroConnect) {
+                scope.launch(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.listen_together_suggestion_sent), Toast.LENGTH_SHORT).show()
+                }
             }
         }
 

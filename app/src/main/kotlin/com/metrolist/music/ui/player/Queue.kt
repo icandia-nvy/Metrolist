@@ -111,6 +111,8 @@ import com.metrolist.music.extensions.metadata
 import com.metrolist.music.extensions.move
 import com.metrolist.music.extensions.toggleRepeatMode
 import com.metrolist.music.listentogether.RoomRole
+import com.metrolist.music.listentogether.currentTrackOrNull
+import com.metrolist.music.listentogether.queue
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.ui.component.ActionPromptDialog
 import com.metrolist.music.ui.component.BottomSheet
@@ -170,7 +172,8 @@ fun Queue(
     // Listen Together state (reactive)
     val listenTogetherManager = LocalListenTogetherManager.current
     val listenTogetherRoleState = listenTogetherManager?.role?.collectAsStateWithLifecycle(initialValue = com.metrolist.music.listentogether.RoomRole.NONE)
-    val isListenTogetherGuest = false
+    val roomState by listenTogetherManager?.roomState?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(null) }
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
 
     val playerConnection = LocalPlayerConnection.current ?: return
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsStateWithLifecycle()
@@ -658,9 +661,32 @@ fun Queue(
         val queueWindows by playerConnection.queueWindows.collectAsStateWithLifecycle()
         val automix by playerConnection.service.automixItems.collectAsStateWithLifecycle()
         val mutableQueueWindows = remember { mutableStateListOf<Timeline.Window>() }
+        val isRemoteRoomQueue = isCasting && listenTogetherManager?.isInRoom == true
+        val remoteQueueTracks =
+            remember(roomState, isRemoteRoomQueue) {
+                if (!isRemoteRoomQueue) return@remember emptyList()
+                val room = roomState ?: return@remember emptyList()
+                val mapTrack = { t: com.metrolist.music.listentogether.TrackInfo ->
+                    MediaMetadata(
+                        id = t.id,
+                        title = t.title,
+                        artists = listOf(MediaMetadata.Artist(id = "", name = t.artist)),
+                        album = t.album.takeIf(String::isNotEmpty)?.let { alb -> MediaMetadata.Album(id = "", title = alb) },
+                        duration = (t.duration / 1000).toInt(),
+                        thumbnailUrl = t.thumbnail.takeIf(String::isNotEmpty),
+                        suggestedBy = t.suggestedBy.takeIf(String::isNotEmpty),
+                    )
+                }
+                listOfNotNull(room.currentTrackOrNull?.let(mapTrack)) + room.queue.map(mapTrack)
+            }
+        val mutableRemoteQueue = remember { mutableStateListOf<MediaMetadata>() }
         val queueLength =
-            remember(queueWindows) {
-                queueWindows.sumOf { it.mediaItem.metadata!!.duration }
+            remember(queueWindows, remoteQueueTracks, isRemoteRoomQueue) {
+                if (isRemoteRoomQueue) {
+                    remoteQueueTracks.sumOf { it.duration }
+                } else {
+                    queueWindows.sumOf { it.mediaItem.metadata!!.duration }
+                }
             }
 
         val coroutineScope = rememberCoroutineScope()
@@ -691,41 +717,70 @@ fun Queue(
                         ).asPaddingValues(),
             ) { from, to ->
                 val currentDragInfo = dragInfo
-                dragInfo =
-                    if (currentDragInfo == null) {
-                        from.index to to.index
-                    } else {
-                        currentDragInfo.first to to.index
+                if (isRemoteRoomQueue) {
+                    if (mutableRemoteQueue.size > 1) {
+                        val safeFrom = (from.index - headerItems).coerceIn(1, mutableRemoteQueue.lastIndex)
+                        val safeTo = (to.index - headerItems).coerceIn(1, mutableRemoteQueue.lastIndex)
+                        dragInfo =
+                            if (currentDragInfo == null) {
+                                (safeFrom + headerItems) to (safeTo + headerItems)
+                            } else {
+                                currentDragInfo.first to (safeTo + headerItems)
+                            }
+                        mutableRemoteQueue.move(safeFrom, safeTo)
                     }
+                } else {
+                    dragInfo =
+                        if (currentDragInfo == null) {
+                            from.index to to.index
+                        } else {
+                            currentDragInfo.first to to.index
+                        }
 
-                val safeFrom = (from.index - headerItems).coerceIn(0, mutableQueueWindows.lastIndex)
-                val safeTo = (to.index - headerItems).coerceIn(0, mutableQueueWindows.lastIndex)
+                    val safeFrom = (from.index - headerItems).coerceIn(0, mutableQueueWindows.lastIndex)
+                    val safeTo = (to.index - headerItems).coerceIn(0, mutableQueueWindows.lastIndex)
 
-                mutableQueueWindows.move(safeFrom, safeTo)
+                    mutableQueueWindows.move(safeFrom, safeTo)
+                }
             }
 
         LaunchedEffect(reorderableState.isAnyItemDragging) {
             if (!reorderableState.isAnyItemDragging) {
                 dragInfo?.let { (from, to) ->
-                    val safeFrom = (from - headerItems).coerceIn(0, queueWindows.lastIndex)
-                    val safeTo = (to - headerItems).coerceIn(0, queueWindows.lastIndex)
-
-                    if (!playerConnection.player.shuffleModeEnabled) {
-                        playerConnection.player.moveMediaItem(safeFrom, safeTo)
+                    if (isRemoteRoomQueue) {
+                        val safeFrom = (from - headerItems).coerceIn(1, mutableRemoteQueue.lastIndex) - 1
+                        val safeTo = (to - headerItems).coerceIn(1, mutableRemoteQueue.lastIndex) - 1
+                        if (safeFrom >= 0 && safeTo >= 0 && safeFrom != safeTo) {
+                            castHandler?.moveQueueItem(safeFrom, safeTo)
+                        }
                     } else {
-                        playerConnection.player.setShuffleOrder(
-                            DefaultShuffleOrder(
-                                queueWindows
-                                    .map { it.firstPeriodIndex }
-                                    .toMutableList()
-                                    .move(safeFrom, safeTo)
-                                    .toIntArray(),
-                                System.currentTimeMillis(),
-                            ),
-                        )
+                        val safeFrom = (from - headerItems).coerceIn(0, queueWindows.lastIndex)
+                        val safeTo = (to - headerItems).coerceIn(0, queueWindows.lastIndex)
+
+                        if (!playerConnection.player.shuffleModeEnabled) {
+                            playerConnection.player.moveMediaItem(safeFrom, safeTo)
+                        } else {
+                            playerConnection.player.setShuffleOrder(
+                                DefaultShuffleOrder(
+                                    queueWindows
+                                        .map { it.firstPeriodIndex }
+                                        .toMutableList()
+                                        .move(safeFrom, safeTo)
+                                        .toIntArray(),
+                                    System.currentTimeMillis(),
+                                ),
+                            )
+                        }
                     }
                     dragInfo = null
                 }
+            }
+        }
+
+        LaunchedEffect(remoteQueueTracks) {
+            mutableRemoteQueue.apply {
+                clear()
+                addAll(remoteQueueTracks)
             }
         }
 
@@ -769,10 +824,154 @@ fun Queue(
                     )
                 }
 
-                itemsIndexed(
-                    items = mutableQueueWindows,
-                    key = { _, item -> item.uid.hashCode() },
-                ) { index, window ->
+                if (isRemoteRoomQueue) {
+                    itemsIndexed(
+                        items = mutableRemoteQueue,
+                        key = { index, item -> "remote_${index}_${item.id}" },
+                    ) { index, track ->
+                        ReorderableItem(
+                            state = reorderableState,
+                            key = "remote_${index}_${track.id}",
+                        ) {
+                            val isActive = index == 0
+                            val dismissBoxState =
+                                rememberSwipeToDismissBoxState(
+                                    positionalThreshold = { totalDistance -> totalDistance },
+                                )
+                            var processedDismiss by remember { mutableStateOf(false) }
+                            LaunchedEffect(dismissBoxState.currentValue) {
+                                val dv = dismissBoxState.currentValue
+                                if (!processedDismiss && index > 0 && (
+                                        dv == SwipeToDismissBoxValue.StartToEnd ||
+                                            dv == SwipeToDismissBoxValue.EndToStart
+                                    )
+                                ) {
+                                    processedDismiss = true
+                                    castHandler?.removeFromQueue(track.id)
+                                }
+                                if (dv == SwipeToDismissBoxValue.Settled) {
+                                    processedDismiss = false
+                                }
+                            }
+
+                            val onCheckedChange: (Boolean) -> Unit = {
+                                if (it) {
+                                    selection.add(track.id)
+                                } else {
+                                    selection.remove(track.id)
+                                }
+                            }
+
+                            val remoteContent: @Composable () -> Unit = {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    modifier = Modifier.animateItem(),
+                                ) {
+                                    MediaMetadataListItem(
+                                        mediaMetadata = track,
+                                        isSelected = false,
+                                        isActive = isActive,
+                                        isPlaying = isPlaying && isActive,
+                                        trailingContent = {
+                                            if (inSelectMode) {
+                                                Checkbox(
+                                                    checked = track.id in selection,
+                                                    onCheckedChange = onCheckedChange,
+                                                )
+                                            } else {
+                                                if (!isListenTogetherGuest) {
+                                                    IconButton(
+                                                        onClick = {
+                                                            menuState.show {
+                                                                QueueMenu(
+                                                                    mediaMetadata = track,
+                                                                    playerBottomSheetState = playerBottomSheetState,
+                                                                    onShowDetailsDialog = {
+                                                                        bottomSheetPageState.show {
+                                                                            ShowMediaInfo(track.id)
+                                                                        }
+                                                                    },
+                                                                    onDismiss = menuState::dismiss,
+                                                                    onRemoveFromQueue = {
+                                                                        if (index > 0) {
+                                                                            castHandler?.removeFromQueue(track.id)
+                                                                        }
+                                                                    },
+                                                                )
+                                                            }
+                                                        },
+                                                    ) {
+                                                        Icon(
+                                                            painter = painterResource(R.drawable.more_vert),
+                                                            contentDescription = null,
+                                                        )
+                                                    }
+                                                }
+                                                if (index > 0 && !locked && !isListenTogetherGuest) {
+                                                    IconButton(
+                                                        onClick = { },
+                                                        modifier = Modifier.draggableHandle(),
+                                                    ) {
+                                                        Icon(
+                                                            painter = painterResource(R.drawable.drag_handle),
+                                                            contentDescription = null,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .background(background)
+                                                .combinedClickable(
+                                                    onClick = {
+                                                        if (inSelectMode) {
+                                                            onCheckedChange(track.id !in selection)
+                                                        } else if (!isListenTogetherGuest) {
+                                                            if (index == 0) {
+                                                                if (castIsPlaying) {
+                                                                    castHandler?.pause()
+                                                                } else {
+                                                                    castHandler?.play()
+                                                                }
+                                                            } else {
+                                                                val navigated = castHandler?.navigateToMediaIfInQueue(track.id) ?: false
+                                                                if (!navigated) {
+                                                                    castHandler?.loadMedia(track)
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    onLongClick = {
+                                                        if (!inSelectMode) {
+                                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            inSelectMode = true
+                                                            onCheckedChange(true)
+                                                        }
+                                                    },
+                                                ),
+                                    )
+                                }
+                            }
+
+                            if (locked || index == 0) {
+                                remoteContent()
+                            } else {
+                                SwipeToDismissBox(
+                                    state = dismissBoxState,
+                                    backgroundContent = {},
+                                ) {
+                                    remoteContent()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    itemsIndexed(
+                        items = mutableQueueWindows,
+                        key = { _, item -> item.uid.hashCode() },
+                    ) { index, window ->
                     ReorderableItem(
                         state = reorderableState,
                         key = window.uid.hashCode(),
@@ -957,8 +1156,9 @@ fun Queue(
                         }
                     }
                 }
+                }
 
-                if (automix.isNotEmpty()) {
+                if (!isRemoteRoomQueue && automix.isNotEmpty()) {
                     item(key = "automix_divider") {
                         HorizontalDivider(
                             modifier =
@@ -1099,12 +1299,13 @@ fun Queue(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                     horizontalAlignment = Alignment.End,
                 ) {
+                    val displayedQueueSize = if (isRemoteRoomQueue) mutableRemoteQueue.size else queueWindows.size
                     Text(
                         text =
                             pluralStringResource(
                                 R.plurals.n_song,
-                                queueWindows.size,
-                                queueWindows.size,
+                                displayedQueueSize,
+                                displayedQueueSize,
                             ),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -1122,15 +1323,20 @@ fun Queue(
                 exit = fadeOut() + shrinkVertically(),
             ) {
                 val selectedSongs =
-                    remember(selection.toList(), mutableQueueWindows) {
-                        mutableQueueWindows
-                            .filter { it.mediaItem.mediaId in selection }
-                            .mapNotNull { it.mediaItem.metadata }
+                    remember(selection.toList(), mutableQueueWindows, mutableRemoteQueue, isRemoteRoomQueue) {
+                        if (isRemoteRoomQueue) {
+                            mutableRemoteQueue.filter { it.id in selection }
+                        } else {
+                            mutableQueueWindows
+                                .filter { it.mediaItem.mediaId in selection }
+                                .mapNotNull { it.mediaItem.metadata }
+                        }
                     }
                 val selectedItems =
-                    remember(selection.toList(), mutableQueueWindows) {
-                        mutableQueueWindows.filter { it.mediaItem.mediaId in selection }
+                    remember(selection.toList(), mutableQueueWindows, isRemoteRoomQueue) {
+                        if (isRemoteRoomQueue) emptyList() else mutableQueueWindows.filter { it.mediaItem.mediaId in selection }
                     }
+                val selectableCount = if (isRemoteRoomQueue) mutableRemoteQueue.size else mutableQueueWindows.size
                 val count = selection.size
                 Row(
                     modifier =
@@ -1151,14 +1357,18 @@ fun Queue(
                         modifier = Modifier.weight(1f),
                     )
                     Checkbox(
-                        checked = count == mutableQueueWindows.size && count > 0,
+                        checked = count == selectableCount && count > 0,
                         onCheckedChange = {
-                            if (count == mutableQueueWindows.size) {
+                            if (count == selectableCount) {
                                 selection.clear()
                             } else {
                                 selection.clear()
-                                mutableQueueWindows.forEach {
-                                    selection.add(it.mediaItem.mediaId)
+                                if (isRemoteRoomQueue) {
+                                    mutableRemoteQueue.forEach { selection.add(it.id) }
+                                } else {
+                                    mutableQueueWindows.forEach {
+                                        selection.add(it.mediaItem.mediaId)
+                                    }
                                 }
                             }
                         },

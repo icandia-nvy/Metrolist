@@ -281,7 +281,7 @@ fun YouTubeSongMenu(
     val configuration = LocalConfiguration.current
     val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
 
-    val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+    val isGuest = listenTogetherManager?.isControlLocked == true
 
     LazyColumn(
         contentPadding = PaddingValues(

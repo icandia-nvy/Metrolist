@@ -62,7 +62,7 @@ fun LocalPlaylistMenu(
     onDismiss: () -> Unit,
 ) {
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+    val isGuest = listenTogetherManager?.isControlLocked == true
     val coroutineScope = rememberCoroutineScope()
     val localContext = LocalContext.current
 
@@ -321,7 +321,7 @@ fun AutoPlaylistMenu(
     playlistName: String = "Playlist",
 ) {
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+    val isGuest = listenTogetherManager?.isControlLocked == true
     val coroutineScope = rememberCoroutineScope()
     val localContext = LocalContext.current
 
@@ -505,7 +505,7 @@ fun TopPlaylistMenu(
     onDismiss: () -> Unit,
 ) {
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+    val isGuest = listenTogetherManager?.isControlLocked == true
 
     val downloadMenuItem =
         when (downloadState) {
@@ -669,7 +669,7 @@ fun CachePlaylistMenu(
     onDismiss: () -> Unit,
 ) {
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+    val isGuest = listenTogetherManager?.isControlLocked == true
 
     val downloadMenuItem =
         when (downloadState) {

@@ -44,8 +44,11 @@ class CastConnectionHandler(
     var onSkipPreviousAction: (() -> Unit)? = null
     var onSetVolumeAction: ((Float) -> Unit)? = null
     var onLoadMediaAction: ((MediaMetadata) -> Unit)? = null
+    var onLoadQueueAction: ((List<MediaMetadata>, Int) -> Unit)? = null
     var onAddToQueueAction: ((MediaItem, Boolean) -> Unit)? = null
     var onRemoveFromQueueAction: ((String) -> Unit)? = null
+    var onMoveQueueItemAction: ((Int, Int) -> Unit)? = null
+    var onJumpToQueueItemAction: ((String) -> Unit)? = null
     var onClearQueueAction: (() -> Unit)? = null
 
     fun setRemoteMode(
@@ -89,12 +92,24 @@ class CastConnectionHandler(
         onLoadMediaAction?.invoke(metadata)
     }
 
+    fun loadQueue(items: List<MediaMetadata>, startIndex: Int = 0) {
+        if (onLoadQueueAction != null) {
+            onLoadQueueAction?.invoke(items, startIndex)
+        } else {
+            items.getOrNull(startIndex)?.let(::loadMedia)
+        }
+    }
+
     fun addToQueue(item: MediaItem, insertNext: Boolean = false) {
         onAddToQueueAction?.invoke(item, insertNext)
     }
 
     fun removeFromQueue(mediaId: String) {
         onRemoveFromQueueAction?.invoke(mediaId)
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        onMoveQueueItemAction?.invoke(fromIndex, toIndex)
     }
 
     fun clearQueue() {
@@ -129,7 +144,13 @@ class CastConnectionHandler(
         onSkipPreviousAction?.invoke()
     }
 
-    fun navigateToMediaIfInQueue(mediaId: String) = false
+    fun navigateToMediaIfInQueue(mediaId: String): Boolean {
+        if (_isCasting.value && onJumpToQueueItemAction != null) {
+            onJumpToQueueItemAction?.invoke(mediaId)
+            return true
+        }
+        return false
+    }
 
     fun release() {
         disconnect()

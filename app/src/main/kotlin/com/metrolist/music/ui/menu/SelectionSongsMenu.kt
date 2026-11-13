@@ -85,7 +85,7 @@ fun SelectionSongMenu(
     val syncUtils = LocalSyncUtils.current
     val deletedNSongsTemplate = stringResource(R.string.deleted_n_songs)
     val listenTogetherManager = com.metrolist.music.LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && listenTogetherManager.isHost == false
+    val isGuest = listenTogetherManager?.isControlLocked == true
 
     val allInLibrary by remember {
         mutableStateOf(
@@ -669,7 +669,7 @@ fun SelectionMediaMetadataMenu(
     val coroutineScope = rememberCoroutineScope()
     val playerConnection = LocalPlayerConnection.current ?: return
     val listenTogetherManager = com.metrolist.music.LocalListenTogetherManager.current
-    val isGuest = listenTogetherManager?.isInRoom == true && listenTogetherManager.isHost == false
+    val isGuest = listenTogetherManager?.isControlLocked == true
 
     val allLiked by remember(songSelection) {
         mutableStateOf(songSelection.isNotEmpty() && songSelection.all { it.liked })

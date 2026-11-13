@@ -217,7 +217,7 @@ private fun NewMiniPlayer(
 
     // Disable swipe for Listen Together guests
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
 
     val layoutDirection = LocalLayoutDirection.current
@@ -510,7 +510,7 @@ private fun NewMiniPlayerPlayButton(
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val castIsPlaying by castHandler?.castIsPlaying?.collectAsState() ?: remember { mutableStateOf(false) }
     val effectiveIsPlaying = if (isCasting) castIsPlaying else isPlaying
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
     val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
 
     val trackColor = outlineColor.copy(alpha = 0.2f)
@@ -708,7 +708,7 @@ private fun LegacyMiniPlayer(
 
     // Disable swipe for Listen Together guests
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
 
     val layoutDirection = LocalLayoutDirection.current
@@ -901,7 +901,7 @@ private fun LegacyPlayPauseButton(
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val castIsPlaying by castHandler?.castIsPlaying?.collectAsState() ?: remember { mutableStateOf(false) }
     val effectiveIsPlaying = if (isCasting) castIsPlaying else isPlaying
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
     val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
 
     IconButton(

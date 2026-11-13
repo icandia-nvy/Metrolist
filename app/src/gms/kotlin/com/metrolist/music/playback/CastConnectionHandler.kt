@@ -197,9 +197,23 @@ class CastConnectionHandler(
     var onSkipPreviousAction: (() -> Unit)? = null
     var onSetVolumeAction: ((Float) -> Unit)? = null
     var onLoadMediaAction: ((AppMediaMetadata) -> Unit)? = null
+    var onLoadQueueAction: ((List<AppMediaMetadata>, Int) -> Unit)? = null
     var onAddToQueueAction: ((MediaItem, Boolean) -> Unit)? = null
     var onRemoveFromQueueAction: ((String) -> Unit)? = null
+    var onMoveQueueItemAction: ((Int, Int) -> Unit)? = null
+    var onJumpToQueueItemAction: ((String) -> Unit)? = null
     var onClearQueueAction: (() -> Unit)? = null
+
+    fun loadQueue(items: List<AppMediaMetadata>, startIndex: Int = 0) {
+        if (!_isCasting.value) return
+        if (castPlayer == null) {
+            if (onLoadQueueAction != null) {
+                onLoadQueueAction?.invoke(items, startIndex)
+            } else {
+                items.getOrNull(startIndex)?.let(::loadMedia)
+            }
+        }
+    }
 
     fun addToQueue(item: MediaItem, insertNext: Boolean = false) {
         if (castPlayer == null) {
@@ -210,6 +224,15 @@ class CastConnectionHandler(
     fun removeFromQueue(mediaId: String) {
         if (castPlayer == null) {
             onRemoveFromQueueAction?.invoke(mediaId)
+        }
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        val player = castPlayer
+        if (player == null) {
+            onMoveQueueItemAction?.invoke(fromIndex, toIndex)
+        } else if (fromIndex != toIndex && fromIndex in 0 until player.mediaItemCount && toIndex in 0 until player.mediaItemCount) {
+            player.moveMediaItem(fromIndex, toIndex)
         }
     }
 
@@ -292,7 +315,14 @@ class CastConnectionHandler(
     }
 
     fun navigateToMediaIfInQueue(mediaId: String): Boolean {
-        val player = castPlayer ?: return false
+        val player = castPlayer
+        if (player == null) {
+            if (_isCasting.value && onJumpToQueueItemAction != null) {
+                onJumpToQueueItemAction?.invoke(mediaId)
+                return true
+            }
+            return false
+        }
         repeat(player.mediaItemCount) { index ->
             if (player.getMediaItemAt(index).mediaId == mediaId) {
                 if (index != player.currentMediaItemIndex) player.seekTo(index, 0L)

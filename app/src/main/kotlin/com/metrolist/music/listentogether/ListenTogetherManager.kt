@@ -106,7 +106,9 @@ class ListenTogetherManager
         private var playerListenerRegistered = false
 
         private val syncHostVolumeEnabled = MutableStateFlow(true)
+        private val metroConnectPreference = MutableStateFlow(true)
         val metroConnectEnabled = MutableStateFlow(false)
+        private var lastHandledActiveDeviceId: String? = null
         private var lastSyncedVolume: Float? = null
         private var previousMuteState: Boolean? = null
         private var muteForcedByPreference = false
@@ -167,6 +169,22 @@ class ListenTogetherManager
         val isHost: Boolean get() = client.isHost
         val hasPersistedSession: Boolean get() = client.hasPersistedSession
 
+        val amActiveSpeaker: Boolean
+            get() {
+                if (!isInRoom) return true
+                if (!metroConnectPreference.value) return isHost
+                val activeId = activeDeviceId.value ?: roomState.value?.hostId
+                val myId = userId.value
+                return if (activeId != null && myId != null) {
+                    activeId == myId
+                } else {
+                    isHost
+                }
+            }
+
+        val isControlLocked: Boolean
+            get() = isInRoom && !isHost && !metroConnectPreference.value
+
         private val playerListener =
             object : Player.Listener {
                 override fun onPlayWhenReadyChanged(
@@ -175,7 +193,7 @@ class ListenTogetherManager
                 ) {
                     try {
                         if (isSyncing || !isInRoom) return
-                        if (!isHost && !metroConnectEnabled.value) return
+                        if (!amActiveSpeaker) return
 
                         val connection = playerConnection ?: return
                         if (connection.allowInternalSync) return
@@ -241,7 +259,7 @@ class ListenTogetherManager
                     reason: Int,
                 ) {
                     try {
-                        if (isSyncing || !isInRoom) return
+                        if (isSyncing || !isInRoom || !amActiveSpeaker) return
                         if (mediaItem == null) return
 
                         val connection = playerConnection ?: return
@@ -261,8 +279,8 @@ class ListenTogetherManager
                             sendTrackChangeInternal(metadata)
 
                             val isPlaying = player.playWhenReady
-                            if (isPlaying && isHost) {
-                                Timber.tag(TAG).d("Host is playing during track change, sending PLAY")
+                            if (isPlaying && amActiveSpeaker) {
+                                Timber.tag(TAG).d("Active speaker playing during track change, sending PLAY")
                                 lastSyncedIsPlaying = true
                                 client.sendPlaybackAction(
                                     PlaybackActions.PLAY,
@@ -285,7 +303,7 @@ class ListenTogetherManager
                 ) {
                     try {
                         if (isSyncing || !isInRoom) return
-                        if (!isHost && !metroConnectEnabled.value) return
+                        if (!amActiveSpeaker) return
                         if (playerConnection?.allowInternalSync == true) return
 
                         // Only send seek if it was a user-initiated seek
@@ -328,10 +346,9 @@ class ListenTogetherManager
 
                 playerConnection = connection
 
-                // Set up playback blocking for guests
+                // Set up playback blocking for passive classic-mode guests only
                 connection?.shouldBlockPlaybackChanges = {
-                    // Block if we're in a room as a guest (not host) unless in Metro-Connect remote mode
-                    isInRoom && !isHost && !metroConnectEnabled.value
+                    isControlLocked
                 }
 
                 // Add listener if in room
@@ -348,9 +365,9 @@ class ListenTogetherManager
                     // Hook up restart action
                     connection.onRestartSong = {
                         try {
-                            if (isHost && !isSyncing) {
+                            if (amActiveSpeaker && !isSyncing) {
                                 val trackId = connection.player.currentMediaItem?.mediaId
-                                Timber.tag(TAG).d("Host Restart Song triggered (sending 1ms as 0ms workaround, track: $trackId)")
+                                Timber.tag(TAG).d("Restart Song triggered (sending 1ms as 0ms workaround, track: $trackId)")
                                 client.sendPlaybackAction(PlaybackActions.SEEK, trackId = trackId, position = 1L)
                             }
                         } catch (e: Exception) {
@@ -359,25 +376,14 @@ class ListenTogetherManager
                     }
                 }
 
-                // Start/stop queue observation based on role
-                if (connection != null && isInRoom && isHost) {
-                    startQueueSyncObservation()
-                    startHeartbeat()
-                    startVolumeSyncObservation()
-                } else {
-                    stopQueueSyncObservation()
-                    stopHeartbeat()
-                    stopVolumeSyncObservation()
-                }
-                if (connection != null && oldConnection !== connection && isInRoom && (!isHost || oldConnection != null)) {
-                    applyNextHostSnapshot = isHost
+                // Start/stop active speaker sync loops
+                updateActiveSpeakerSyncLoops()
+                if (connection != null && oldConnection !== connection && isInRoom && (!amActiveSpeaker || oldConnection != null)) {
+                    applyNextHostSnapshot = amActiveSpeaker
                     client.requestSync()
                 }
-                if (metroConnectEnabled.value && isInRoom) {
-                    applyMetroConnectState()
-                } else {
-                    updateGuestMuteState()
-                }
+                applyMetroConnectState()
+                updateGuestMuteState()
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Error in setPlayerConnection")
             }
@@ -394,12 +400,35 @@ class ListenTogetherManager
             }
             scope.launch {
                 context.dataStore.data
-                    .map { it[ListenTogetherMetroConnectKey] ?: false }
+                    .map { it[ListenTogetherMetroConnectKey] ?: true }
                     .distinctUntilChanged()
                     .collect { enabled ->
-                        metroConnectEnabled.value = enabled
+                        metroConnectPreference.value = enabled
                         applyMetroConnectState()
+                        updateActiveSpeakerSyncLoops()
+                        updateGuestMuteState()
                     }
+            }
+        }
+
+        private fun updateActiveSpeakerSyncLoops() {
+            val connection = playerConnection
+            if (connection != null && isInRoom && amActiveSpeaker) {
+                startQueueSyncObservation()
+                startHeartbeat()
+                startVolumeSyncObservation()
+                if (!playerListenerRegistered) {
+                    try {
+                        connection.player.addListener(playerListener)
+                        playerListenerRegistered = true
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).e(e, "Failed to add player listener")
+                    }
+                }
+            } else {
+                stopQueueSyncObservation()
+                stopHeartbeat()
+                stopVolumeSyncObservation()
             }
         }
 
@@ -430,28 +459,12 @@ class ListenTogetherManager
 
                         val wasHost = previousRole == RoomRole.HOST
                         if (newRole == RoomRole.HOST && !wasHost) {
-                            val connection = playerConnection
-                            if (connection != null) {
-                                Timber.tag(TAG).d("Role changed to HOST, starting sync services")
-                                startQueueSyncObservation()
-                                startHeartbeat()
-                                startVolumeSyncObservation()
-                                // Re-register listener if needed
-                                if (!playerListenerRegistered) {
-                                    try {
-                                        connection.player.addListener(playerListener)
-                                        playerListenerRegistered = true
-                                    } catch (e: Exception) {
-                                        Timber.tag(TAG).e(e, "Failed to add player listener on role change")
-                                    }
-                                }
-                            }
+                            Timber.tag(TAG).d("Role changed to HOST")
                         } else if (newRole != RoomRole.HOST && wasHost) {
-                            Timber.tag(TAG).d("Role changed from HOST, stopping sync services")
-                            stopQueueSyncObservation()
-                            stopHeartbeat()
-                            stopVolumeSyncObservation()
+                            Timber.tag(TAG).d("Role changed from HOST")
                         }
+                        applyMetroConnectState()
+                        updateActiveSpeakerSyncLoops()
                         updateGuestMuteState()
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error in role change handler")
@@ -462,7 +475,7 @@ class ListenTogetherManager
             // Sync remote mode state whenever roomState changes
             scope.launch {
                 roomState.collect { room ->
-                    if (metroConnectEnabled.value && isInRoom) {
+                    if (isInRoom && !amActiveSpeaker && metroConnectPreference.value) {
                         applyMetroConnectState()
                     }
                 }
@@ -520,12 +533,8 @@ class ListenTogetherManager
                                 )
                             }
                         }
-                        startQueueSyncObservation()
-                        startHeartbeat()
-                        startVolumeSyncObservation()
-                        if (metroConnectEnabled.value) {
-                            applyMetroConnectState()
-                        }
+                        applyMetroConnectState()
+                        updateActiveSpeakerSyncLoops()
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error handling RoomCreated event")
                     }
@@ -536,10 +545,11 @@ class ListenTogetherManager
                     // Save current mute state before joining as guest so we can restore it on leave
                     saveMuteStateOnJoin()
                     lastAppliedRevision = event.state.revision
-                    if (metroConnectEnabled.value) {
-                        applyMetroConnectState()
-                    } else {
-                        // Apply the full initial state including queue
+                    lastHandledActiveDeviceId = event.state.hostId
+                    applyMetroConnectState()
+                    updateActiveSpeakerSyncLoops()
+                    if (!metroConnectEnabled.value && !amActiveSpeaker) {
+                        // Classic ListenTogether mode: apply initial state including queue
                         applyPlaybackState(
                             currentTrack = event.state.currentTrackOrNull,
                             isPlaying = event.state.isPlaying,
@@ -549,8 +559,8 @@ class ListenTogetherManager
                             // bypassBuffer=false (default) for initial join buffer sync
                         )
                         applyHostVolumeIfNeeded(event.state.volume)
-                        updateGuestMuteState()
                     }
+                    updateGuestMuteState()
                 }
 
                 is ListenTogetherEvent.PlaybackSync -> {
@@ -560,12 +570,7 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.ActiveDeviceChanged -> {
                     Timber.tag(TAG).d("ActiveDeviceChanged: ${event.activeDeviceId}")
-                    val amIActive = event.activeDeviceId == client.userId.value
-                    metroConnectEnabled.value = !amIActive
-                    applyMetroConnectState()
-                    if (amIActive && !isHost) {
-                        client.requestSync()
-                    }
+                    handleActiveDeviceTransition(event.activeDeviceId)
                 }
 
                 is ListenTogetherEvent.UserJoined -> {
@@ -578,7 +583,7 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.BufferComplete -> {
                     Timber.tag(TAG).d("BufferComplete for track: ${event.trackId}")
-                    if (!isHost && bufferingTrackId == event.trackId) {
+                    if (bufferingTrackId == event.trackId) {
                         bufferCompleteReceivedForTrack = event.trackId
                         applyPendingSyncIfReady()
                     }
@@ -591,7 +596,7 @@ class ListenTogetherManager
                         ).d(
                             "SyncStateReceived: playing=${event.state.isPlaying}, pos=${event.state.position}, track=${event.state.currentTrackOrNull?.id}",
                         )
-                    if (!isHost || applyNextHostSnapshot) {
+                    if (!amActiveSpeaker || applyNextHostSnapshot) {
                         val forceFullState = applyNextHostSnapshot
                         applyNextHostSnapshot = false
                         handleSyncState(event.state, forceFullState)
@@ -629,38 +634,39 @@ class ListenTogetherManager
                             }
                         }
 
-                        // Sync state based on role
-                        if (event.isHost) {
-                            // Host: only send sync if necessary
+                        // Sync state based on active speaker status
+                        applyMetroConnectState()
+                        updateActiveSpeakerSyncLoops()
+                        if (amActiveSpeaker) {
+                            // Active speaker: push local state if different from server
                             lastSyncedIsPlaying = player?.playWhenReady
                             lastSyncedTrackId = player?.currentMediaItem?.mediaId
 
                             val currentMetadata = player?.currentMetadata
                             if (currentMetadata != null) {
-                                // Check if server already has the right track (from event.state)
                                 val serverTrackId = event.state.currentTrackOrNull?.id
                                 if (serverTrackId != currentMetadata.id) {
                                     Timber
                                         .tag(
                                             TAG,
                                         ).d(
-                                            "Reconnected as host, server track ($serverTrackId) differs from local (${currentMetadata.id}), syncing",
+                                            "Reconnected as active speaker, server track ($serverTrackId) differs from local (${currentMetadata.id}), syncing",
                                         )
                                     sendTrackChangeInternal(currentMetadata)
                                 } else {
-                                    Timber.tag(TAG).d("Reconnected as host, server already has current track $serverTrackId")
+                                    Timber.tag(TAG).d("Reconnected as active speaker, server already has current track $serverTrackId")
                                 }
 
                                 if (player.playWhenReady) {
                                     val pos = player.currentPosition
                                     val trackId = player.currentMediaItem?.mediaId
-                                    Timber.tag(TAG).d("Reconnected host is playing, sending PLAY at $pos (track: $trackId)")
+                                    Timber.tag(TAG).d("Reconnected active speaker is playing, sending PLAY at $pos (track: $trackId)")
                                     client.sendPlaybackAction(PlaybackActions.PLAY, trackId = trackId, position = pos)
                                 }
                             }
-                        } else {
-                            // Guest: ALWAYS sync to host's state after reconnection
-                            Timber.tag(TAG).d("Reconnected as guest, syncing to host's current state")
+                        } else if (!metroConnectEnabled.value) {
+                            // Classic listener guest: sync to active speaker state
+                            Timber.tag(TAG).d("Reconnected as classic guest, syncing to room state")
                             lastAppliedRevision = event.state.revision
                             applyPlaybackState(
                                 currentTrack = event.state.currentTrackOrNull,
@@ -689,58 +695,9 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.HostChanged -> {
                     Timber.tag(TAG).d("Host changed: new host is ${event.newHostName} (${event.newHostId})")
-                    val wasHost = isHost
-                    val nowIsHost = event.newHostId == userId.value
-
-                    if (wasHost && !nowIsHost) {
-                        // Lost host role
-                        Timber.tag(TAG).d("Local user lost host role")
-                        stopQueueSyncObservation()
-                        stopVolumeSyncObservation()
-                        if (playerListenerRegistered) {
-                            playerConnection?.player?.removeListener(playerListener)
-                            playerListenerRegistered = false
-                        }
-                        // Restore guest mute state since we're now a guest
-                        updateGuestMuteState()
-                    } else if (!wasHost && nowIsHost) {
-                        // Gained host role
-                        Timber.tag(TAG).d("Local user gained host role")
-                        updateGuestMuteState() // This will restore mute state since we're now host
-
-                        // Register player listener
-                        val connection = playerConnection
-                        val player = connection?.player
-                        if (player != null && !playerListenerRegistered) {
-                            try {
-                                player.addListener(playerListener)
-                                playerListenerRegistered = true
-                                Timber.tag(TAG).d("Added player listener as new host")
-                            } catch (e: Exception) {
-                                Timber.tag(TAG).e(e, "Failed to add player listener on host transfer")
-                            }
-                        }
-
-                        // Start the queue and volume sync observations now that we're host
-                        startQueueSyncObservation()
-                        startVolumeSyncObservation()
-
-                        // Send current player state to guests
-                        val metadata = player?.currentMetadata
-                        if (metadata != null) {
-                            Timber.tag(TAG).d("New host sending current track: ${metadata.title}")
-                            sendTrackChangeInternal(metadata)
-
-                            if (player.playWhenReady) {
-                                Timber.tag(TAG).d("New host is playing, sending PLAY")
-                                client.sendPlaybackAction(
-                                    PlaybackActions.PLAY,
-                                    trackId = metadata.id,
-                                    position = player.currentPosition,
-                                )
-                            }
-                        }
-                    }
+                    applyMetroConnectState()
+                    updateActiveSpeakerSyncLoops()
+                    updateGuestMuteState()
                 }
 
                 is ListenTogetherEvent.ConnectionError -> {
@@ -781,15 +738,56 @@ class ListenTogetherManager
             lastSyncActionTime = 0L // Reset sync debouncing
             lastAppliedRevision = 0L
             applyNextHostSnapshot = false
+            lastHandledActiveDeviceId = null
+            metroConnectEnabled.value = false
             invalidatePendingQueueMutations()
             ++currentTrackGeneration // Increment to invalidate any pending track-change coroutines
+        }
+
+        private fun handleActiveDeviceTransition(
+            targetId: String?,
+            handoffPosition: Long? = null,
+        ) {
+            val normalized = targetId ?: roomState.value?.hostId
+            val amIActive =
+                (normalized != null && normalized == userId.value) ||
+                    (normalized == null && isHost)
+            val wasActive = lastHandledActiveDeviceId?.let { it == userId.value } ?: !metroConnectEnabled.value
+            val transitionChanged = lastHandledActiveDeviceId != normalized || (handoffPosition != null && handoffPosition > 0L)
+            lastHandledActiveDeviceId = normalized
+
+            applyMetroConnectState()
+            updateActiveSpeakerSyncLoops()
+
+            if (amIActive && (!wasActive || transitionChanged)) {
+                val room = roomState.value
+                if (room != null && metroConnectPreference.value) {
+                    val pos = handoffPosition?.takeIf { it > 0L } ?: room.position
+                    val localId = playerConnection?.player?.currentMediaItem?.mediaId
+                    val roomTrack = room.currentTrackOrNull
+                    // Only reload local player if we weren't already actively playing this room track
+                    if (!wasActive || (roomTrack != null && localId != roomTrack.id)) {
+                        applyPlaybackState(
+                            currentTrack = roomTrack,
+                            isPlaying = room.isPlaying,
+                            position = pos,
+                            queue = room.queue,
+                            effectiveAtServerTime = room.lastUpdate,
+                            bypassBuffer = true,
+                        )
+                    }
+                } else if (!isHost) {
+                    client.requestSync()
+                }
+            }
         }
 
         fun applyMetroConnectState() {
             val connection = playerConnection ?: return
             val castHandler = connection.service.castConnectionHandler
             val inRoom = isInRoom
-            val isRemote = metroConnectEnabled.value && inRoom
+            val isRemote = inRoom && metroConnectPreference.value && !amActiveSpeaker
+            metroConnectEnabled.value = isRemote
 
             if (isRemote) {
                 // Pause local player completely to release Android Audio Focus
@@ -802,10 +800,13 @@ class ListenTogetherManager
                     Timber.tag(TAG).e(e, "Error pausing local player in remote mode")
                 }
 
-                // Identify remote target device name
+                // Identify remote active speaker device name
                 val currentRoom = roomState.value
-                val remoteUser = currentRoom?.usersList?.firstOrNull { it.isConnected && it.userId != client.userId.value }
-                val remoteName = remoteUser?.username ?: "PC Limusic"
+                val targetDeviceId = activeDeviceId.value ?: currentRoom?.hostId
+                val remoteUser =
+                    currentRoom?.usersList?.firstOrNull { it.userId == targetDeviceId }
+                        ?: currentRoom?.usersList?.firstOrNull { it.isConnected && it.userId != client.userId.value }
+                val remoteName = remoteUser?.username ?: "Metro-Connect"
 
                 // Configure castHandler for remote control
                 val track = currentRoom?.currentTrackOrNull
@@ -865,12 +866,37 @@ class ListenTogetherManager
                     client.sendPlaybackAction(PlaybackActions.SET_VOLUME, volume = vol)
                 }
                 castHandler?.onLoadMediaAction = { metadata ->
+                    val ti = metadata.toTrackInfo()
                     client.sendPlaybackAction(
                         PlaybackActions.CHANGE_TRACK,
                         trackId = metadata.id,
-                        trackInfo = metadata.toTrackInfo(),
+                        trackInfo = ti,
                         position = 0L,
                     )
+                    client.sendPlaybackAction(
+                        PlaybackActions.PLAY,
+                        trackId = metadata.id,
+                        position = 0L,
+                    )
+                }
+                castHandler?.onLoadQueueAction = { items, startIndex ->
+                    if (items.isNotEmpty()) {
+                        val safeIdx = startIndex.coerceIn(0, items.lastIndex)
+                        val target = items[safeIdx]
+                        val upcoming = items.drop(safeIdx + 1).map { it.toTrackInfo() }
+                        client.sendPlaybackAction(
+                            PlaybackActions.CHANGE_TRACK,
+                            trackId = target.id,
+                            trackInfo = target.toTrackInfo(),
+                            queue = upcoming,
+                            position = 0L,
+                        )
+                        client.sendPlaybackAction(
+                            PlaybackActions.PLAY,
+                            trackId = target.id,
+                            position = 0L,
+                        )
+                    }
                 }
                 castHandler?.onAddToQueueAction = { item, insertNext ->
                     val metadata = item.metadata
@@ -892,11 +918,43 @@ class ListenTogetherManager
                 castHandler?.onClearQueueAction = {
                     client.sendPlaybackAction(PlaybackActions.QUEUE_CLEAR)
                 }
-
-                // Update mediaMetadata so MiniPlayer & Player screens show the track info
-                track?.let {
-                    connection.mediaMetadata.value = it.toMediaMetadata()
+                castHandler?.onMoveQueueItemAction = { fromIndex, toIndex ->
+                    val currentQueue = roomState.value?.queue?.toMutableList()
+                    if (currentQueue != null && fromIndex in currentQueue.indices && toIndex in currentQueue.indices && fromIndex != toIndex) {
+                        val moved = currentQueue.removeAt(fromIndex)
+                        currentQueue.add(toIndex, moved)
+                        client.sendPlaybackAction(PlaybackActions.SYNC_QUEUE, queue = currentQueue)
+                    }
                 }
+                castHandler?.onJumpToQueueItemAction = { mediaId ->
+                    val current = roomState.value
+                    val queueList = current?.queue.orEmpty()
+                    val idx = queueList.indexOfFirst { it.id == mediaId }
+                    if (idx >= 0) {
+                        val target = queueList[idx]
+                        val remaining = queueList.drop(idx + 1)
+                        client.sendPlaybackAction(
+                            PlaybackActions.CHANGE_TRACK,
+                            trackId = target.id,
+                            trackInfo = target,
+                            queue = remaining,
+                            position = 0L,
+                        )
+                        client.sendPlaybackAction(
+                            PlaybackActions.PLAY,
+                            trackId = target.id,
+                            position = 0L,
+                        )
+                    } else if (current?.currentTrackOrNull?.id == mediaId) {
+                        client.sendPlaybackAction(PlaybackActions.SEEK, trackId = mediaId, position = 0L)
+                        client.sendPlaybackAction(PlaybackActions.PLAY, trackId = mediaId, position = 0L)
+                    }
+                }
+
+                // Update mediaMetadata & skip availability so MiniPlayer & Player screens mirror the room
+                connection.mediaMetadata.value = track?.toMediaMetadata()
+                connection.canSkipPrevious.value = track != null
+                connection.canSkipNext.value = !currentRoom?.queue.isNullOrEmpty() || track != null
 
                 // Start position ticker so seekbar moves smoothly
                 startRemoteTicker()
@@ -935,8 +993,33 @@ class ListenTogetherManager
             }
         }
 
-        fun setActiveDevice(userId: String) {
-            client.setActiveDevice(userId)
+        fun toggleRemoteMode(remote: Boolean) {
+            if (!metroConnectPreference.value) {
+                setMetroConnectEnabled(true)
+            }
+            if (!isInRoom) return
+            if (remote) {
+                val targetId =
+                    roomState.value
+                        ?.usersList
+                        ?.firstOrNull { it.isConnected && it.userId != userId.value }
+                        ?.userId
+                if (targetId != null) {
+                    setActiveDevice(targetId)
+                }
+            } else {
+                userId.value?.let { setActiveDevice(it) }
+            }
+        }
+
+        fun setActiveDevice(targetUserId: String) {
+            val handoffPos =
+                if (amActiveSpeaker) {
+                    playerConnection?.player?.currentPosition?.takeIf { it > 0L }
+                } else {
+                    null
+                }
+            client.setActiveDevice(targetUserId, handoffPos)
         }
 
         private fun updateGuestMuteState() {
@@ -986,7 +1069,7 @@ class ListenTogetherManager
         }
 
         private fun applyHostVolumeIfNeeded(volume: Float?) {
-            if (!syncHostVolumeEnabled.value || isHost || !isInRoom) return
+            if (!syncHostVolumeEnabled.value || amActiveSpeaker || !isInRoom) return
             val connection = playerConnection ?: return
             val target = volume?.coerceIn(0f, 1f) ?: return
             connection.service.playerVolume.value = target
@@ -1100,7 +1183,7 @@ class ListenTogetherManager
                     while (
                         generation == driftCorrectionGeneration &&
                         playerConnection === connection &&
-                        !isHost &&
+                        !amActiveSpeaker &&
                         player.playWhenReady &&
                         (trackId == null || player.currentMediaItem?.mediaId == trackId)
                     ) {
@@ -1231,12 +1314,7 @@ class ListenTogetherManager
             if (action.action == PlaybackActions.SET_ACTIVE_DEVICE) {
                 val targetId = action.trackIdOrNull
                 if (!targetId.isNullOrEmpty()) {
-                    val amIActive = targetId == client.userId.value
-                    metroConnectEnabled.value = !amIActive
-                    applyMetroConnectState()
-                    if (amIActive && !isHost) {
-                        client.requestSync()
-                    }
+                    handleActiveDeviceTransition(targetId, action.position.takeIf { it > 0L })
                 }
                 return
             }
@@ -1467,18 +1545,34 @@ class ListenTogetherManager
                     }
 
                     PlaybackActions.SKIP_NEXT -> {
-                        Timber.tag(TAG).d("Guest: SKIP_NEXT")
+                        Timber.tag(TAG).d("Remote/Guest: SKIP_NEXT")
                         connection.seekToNext()
+                        player.currentMetadata?.let { meta ->
+                            lastSyncedTrackId = meta.id
+                            sendTrackChangeInternal(meta)
+                            if (player.playWhenReady) {
+                                lastSyncedIsPlaying = true
+                                client.sendPlaybackAction(PlaybackActions.PLAY, trackId = meta.id, position = 0L)
+                            }
+                        }
                     }
 
                     PlaybackActions.SKIP_PREV -> {
-                        Timber.tag(TAG).d("Guest: SKIP_PREV")
+                        Timber.tag(TAG).d("Remote/Guest: SKIP_PREV")
                         connection.seekToPrevious()
+                        player.currentMetadata?.let { meta ->
+                            lastSyncedTrackId = meta.id
+                            sendTrackChangeInternal(meta)
+                            if (player.playWhenReady) {
+                                lastSyncedIsPlaying = true
+                                client.sendPlaybackAction(PlaybackActions.PLAY, trackId = meta.id, position = 0L)
+                            }
+                        }
                     }
 
                     PlaybackActions.QUEUE_ADD -> {
                         val track = actionTrackInfo
-                        if (action.revision > 0L) {
+                        if (action.revision > 0L && action.queueCount > 0) {
                             applyCanonicalUpcomingQueue(connection, action.queue.orEmpty(), actionQueueTitle)
                         } else if (track == null) {
                             Timber.tag(TAG).w("QUEUE_ADD missing trackInfo")
@@ -1521,7 +1615,7 @@ class ListenTogetherManager
 
                     PlaybackActions.QUEUE_REMOVE -> {
                         val removeId = actionTrackId
-                        if (action.revision > 0L) {
+                        if (action.revision > 0L && action.queueCount > 0) {
                             applyCanonicalUpcomingQueue(connection, action.queue.orEmpty(), actionQueueTitle)
                         } else if (removeId.isNullOrEmpty()) {
                             Timber.tag(TAG).w("QUEUE_REMOVE missing trackId")
@@ -2103,7 +2197,7 @@ class ListenTogetherManager
          * Internal track change - bypasses isSyncing check for initial state sync
          */
         private fun sendTrackChangeInternal(metadata: MediaMetadata) {
-            if (!isHost && !metroConnectEnabled.value) return
+            if (!amActiveSpeaker) return
 
             // Use a default duration of 3 minutes if duration is 0 or negative
             val durationMs = if (metadata.duration > 0) metadata.duration.toLong() * 1000 else 180000L
@@ -2161,7 +2255,7 @@ class ListenTogetherManager
                             }
                         }?.distinctUntilChanged()
                         ?.collectLatest { tracks ->
-                            if (!isHost || !isInRoom || isSyncing) return@collectLatest
+                            if (!amActiveSpeaker || !isInRoom || isSyncing) return@collectLatest
 
                             delay(500) // Debounce rapid playlist manipulations
 
@@ -2192,7 +2286,7 @@ class ListenTogetherManager
                         ?.service
                         ?.playerVolume
                         ?.collectLatest { volume ->
-                            if (!isHost || !isInRoom || !syncHostVolumeEnabled.value) return@collectLatest
+                            if (!amActiveSpeaker || !isInRoom || !syncHostVolumeEnabled.value) return@collectLatest
 
                             val normalized = volume.coerceIn(0f, 1f)
                             val last = lastSyncedVolume
@@ -2320,13 +2414,13 @@ class ListenTogetherManager
             if (heartbeatJob?.isActive == true) return
             heartbeatJob =
                 scope.launch {
-                    while (heartbeatJob?.isActive == true && isInRoom && isHost) {
+                    while (heartbeatJob?.isActive == true && isInRoom && amActiveSpeaker) {
                         delay(8000L)
                         playerConnection?.player?.let { player ->
                             if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
                                 val pos = player.currentPosition
                                 val beatTrackId = player.currentMediaItem?.mediaId
-                                Timber.tag(TAG).d("Host heartbeat: sending PLAY at pos $pos track=$beatTrackId")
+                                Timber.tag(TAG).d("Active speaker heartbeat: sending PLAY at pos $pos track=$beatTrackId")
                                 client.sendPlaybackAction(
                                     PlaybackActions.PLAY,
                                     trackId = beatTrackId,

@@ -143,7 +143,7 @@ fun ListenTogetherScreen(
     val (listenTogetherInTopBar) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
     val shouldShowTopBar = showTopBar || listenTogetherInTopBar
 
-    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, defaultValue = false)
+    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, defaultValue = true)
 
     var savedUsername by rememberPreference(ListenTogetherUsernameKey, "")
     var roomCodeInput by rememberSaveable { mutableStateOf("") }
@@ -200,6 +200,7 @@ fun ListenTogetherScreen(
 
     val isInRoom = listenTogetherManager.isInRoom
     val activeDeviceId by listenTogetherManager.activeDeviceId.collectAsStateWithLifecycle()
+    val isRemoteMode by listenTogetherManager.metroConnectEnabled.collectAsStateWithLifecycle()
     val isHost = listenTogetherManager.isHost || (roomState?.hostId != null && roomState?.hostId == userId)
 
     // User action menu dialog
@@ -306,7 +307,7 @@ fun ListenTogetherScreen(
         val remoteUsers = roomState?.usersList?.filter { it.isConnected && it.userId != userId } ?: emptyList()
         item {
             MetroConnectCard(
-                enabled = metroConnectEnabled,
+                enabled = if (isInRoom) isRemoteMode else metroConnectEnabled,
                 isInRoom = isInRoom,
                 remoteUsers = remoteUsers,
                 activeDeviceId = activeDeviceId,
@@ -315,8 +316,8 @@ fun ListenTogetherScreen(
                     listenTogetherManager.setActiveDevice(targetId)
                 },
                 onToggleRemote = { isRemote ->
-                    metroConnectEnabled = isRemote
-                    listenTogetherManager.setMetroConnectEnabled(isRemote)
+                    metroConnectEnabled = true
+                    listenTogetherManager.toggleRemoteMode(isRemote)
                 },
             )
         }

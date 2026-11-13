@@ -213,7 +213,7 @@ fun CommunityPlaylistCard(
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
     val scope = rememberCoroutineScope()
     val isDark = isSystemInDarkTheme()
     val artistNameAliases = LocalArtistNameAliases.current
@@ -655,7 +655,7 @@ fun HomeScreen(
     val playerConnection = LocalPlayerConnection.current ?: return
     val haptic = LocalHapticFeedback.current
     val listenTogetherManager = LocalListenTogetherManager.current
-    val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
+    val isListenTogetherGuest = listenTogetherManager?.isControlLocked == true
 
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()

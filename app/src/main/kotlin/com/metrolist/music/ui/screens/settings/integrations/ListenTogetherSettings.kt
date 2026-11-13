@@ -120,7 +120,7 @@ fun ListenTogetherSettings(navController: NavController) {
     var autoApprovalJoins by rememberPreference(ListenTogetherAutoApprovalKey, false)
     var autoApproveSuggestions by rememberPreference(ListenTogetherAutoApproveSuggestionsKey, false)
     var syncHostVolume by rememberPreference(ListenTogetherSyncVolumeKey, true)
-    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, false)
+    var metroConnectEnabled by rememberPreference(ListenTogetherMetroConnectKey, true)
     var autoReconnect by rememberPreference(ListenTogetherAutoReconnectKey, true)
 
     var showServerUrlDialog by rememberSaveable { mutableStateOf(false) }
